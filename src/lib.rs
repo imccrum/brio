@@ -1,3 +1,5 @@
+#![feature(async_closure)]
+
 use async_std::{
     net::{TcpListener, TcpStream, ToSocketAddrs},
     prelude::*,
@@ -53,7 +55,6 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
             router: Router::new(()),
         }
     }
-
     pub fn run(self, port: u32) -> Result<()> {
         let router = Arc::new(self.router);
         task::block_on(accept_loop(format!("127.0.0.1:{}", port), router))
@@ -609,6 +610,9 @@ mod tests {
         thread::spawn(move || {
             let mut app = App::new(());
             app.post("/foo", handler);
+            app.get("/baz", async move |_req: Request| {
+                Response::status(Status::Ok)
+            });
             app.middleware(logger);
             app.run(port)
         });
