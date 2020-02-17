@@ -11,7 +11,9 @@ use std::{
     collections::hash_map::HashMap,
     future::Future,
     pin::Pin,
+    str,
     sync::{Arc, Mutex},
+    thread,
 };
 
 const BUF_LEN: usize = 256;
@@ -24,33 +26,130 @@ type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 's
 #[derive(Debug)]
 pub enum Void {}
 
-pub struct App {}
+pub struct App<Routes> {
+    router: Router<Routes>,
+}
 
-impl App {
-    pub fn new() -> App {
-        App {}
+fn register_sigterm_listener() -> Result<futures::channel::oneshot::Receiver<bool>> {
+    let signals =
+        signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
+    let (sigterm_tx, sigterm_rx) = futures::channel::oneshot::channel::<bool>();
+    thread::spawn(move || {
+        let mut count = 0u32;
+        for _signal in signals.forever() {
+            count += 1;
+            if count > 0 {
+                break;
+            }
+        }
+        sigterm_tx.send(true).expect("shutdown notify failed");
+    });
+    Ok(sigterm_rx)
+}
+
+impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
+    pub fn new(_routes: Routes) -> App<()> {
+        App {
+            router: Router::new(()),
+        }
     }
-    pub fn run(self) -> Result<()> {
-        task::block_on(accept_loop("127.0.0.1:8080"))
+
+    pub fn run(self, port: u32) -> Result<()> {
+        let router = Arc::new(self.router);
+        task::block_on(accept_loop(format!("127.0.0.1:{}", port), router))
+    }
+    pub fn get(&mut self, path: &'static str, handler: impl Route) -> &Self {
+        self.add_route(Path::new(Method::Get, path.to_owned()), handler);
+        self
+    }
+    pub fn post(&mut self, path: &'static str, handler: impl Route) -> &Self {
+        self.add_route(Path::new(Method::Post, path.to_owned()), handler);
+        self
+    }
+    pub fn put(&mut self, path: &'static str, handler: impl Route) -> &Self {
+        self.add_route(Path::new(Method::Put, path.to_owned()), handler);
+        self
+    }
+    pub fn delete(&mut self, path: &'static str, handler: impl Route) -> &Self {
+        self.add_route(Path::new(Method::Delete, path.to_owned()), handler);
+        self
+    }
+    pub fn middleware(&mut self, middleware: impl Middleware + 'static) -> &Self {
+        self.add_middleware(middleware);
+        self
+    }
+    fn add_route(&mut self, route: Path, handler: impl Route) {
+        self.router.routes.insert(route, Box::new(handler));
+    }
+    fn add_middleware(&mut self, middleware: impl Middleware + 'static) {
+        self.router.middleware.push(Arc::new(middleware));
     }
 }
 
-async fn accept_loop(addr: impl ToSocketAddrs) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
+pub struct Router<Routes> {
+    pub routes: HashMap<Path, Box<dyn Route + 'static>>,
+    pub middleware: Vec<Arc<dyn Middleware>>,
+    pub config: Routes,
+    pub not_found: Box<dyn Route + 'static>,
+}
 
-    let mut incoming = listener.incoming();
-    while let Some(stream) = incoming.next().await {
-        let stream = stream?;
-        println!("accepting from: {}", stream.peer_addr()?);
-        spawn_and_log_error(keep_alive_loop(stream));
+impl<Routes: Send + Sync + Copy + Clone + 'static> Router<Routes> {
+    pub fn new(config: Routes) -> Router<Routes> {
+        Router {
+            routes: HashMap::new(),
+            middleware: vec![],
+            config: config,
+            not_found: Box::new(not_found),
+        }
     }
+}
 
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct Path {
+    method: Method,
+    path: String,
+}
+
+impl Path {
+    pub fn new(method: Method, path: String) -> Path {
+        Path { method, path }
+    }
+}
+
+async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
+    addr: impl ToSocketAddrs,
+    router: Arc<Router<Routes>>,
+) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    let mut incoming = listener.incoming();
+    let mut sigterm_rx = register_sigterm_listener()?.fuse();
+    loop {
+        select! {
+            stream = incoming.next().fuse() => match stream {
+                Some(stream) => {
+                    let stream = stream?;
+                    println!("accepting from: {}", stream.peer_addr()?);
+                    spawn_and_log_error(keep_alive_loop(stream, router.clone()));
+                },
+                None => {
+                    break;
+                }
+            },
+            _ = sigterm_rx =>  {
+                break;
+            }
+        }
+    }
+    println!("shutting down");
     Ok(())
 }
 
-async fn keep_alive_loop(mut stream: TcpStream) -> Result<()> {
+async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
+    mut stream: TcpStream,
+    router: Arc<Router<Routes>>,
+) -> Result<()> {
     loop {
-        if !request_loop(&mut stream).await? {
+        if !request_loop(&mut stream, router.clone()).await? {
             // not keep-alive
             break;
         }
@@ -58,7 +157,10 @@ async fn keep_alive_loop(mut stream: TcpStream) -> Result<()> {
     Ok(())
 }
 
-async fn request_loop(stream: &mut TcpStream) -> Result<bool> {
+async fn request_loop<Routes: Send + Sync + Copy + Clone + 'static>(
+    stream: &mut TcpStream,
+    router: Arc<Router<Routes>>,
+) -> Result<bool> {
     let writer = stream.clone();
     let mut reader = stream.clone();
     let mut buf = [0u8; BUF_LEN];
@@ -71,13 +173,9 @@ async fn request_loop(stream: &mut TcpStream) -> Result<bool> {
     if req.content_length > 0 {
         req.set_body(body_receiver)
     }
-    let keep_alive = req
-        .headers
-        .get("keep-alive")
-        .map(|h| h.parse().unwrap())
-        .unwrap_or(false);
+    let keep_alive = req.keep_alive();
 
-    let request_handle = task::spawn(handle_request(req, writer));
+    let request_handle = task::spawn(handle_request(req, writer, router));
     let body_handle = body_loop(&mut reader, body_read, content_length, body_sender);
     let _ = join!(body_handle, request_handle);
 
@@ -104,9 +202,11 @@ async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<
             let headers: HashMap<String, String> = parser
                 .headers
                 .iter()
-                .flat_map(|&x| {
-                    std::str::from_utf8(x.value)
-                        .map(|val| (x.name.to_owned().to_lowercase(), val.to_owned()))
+                .map(|&x| {
+                    (
+                        x.name.to_owned().to_lowercase(),
+                        str::from_utf8(x.value).unwrap().to_owned(),
+                    )
                 })
                 .collect();
             let content_length: usize = headers
@@ -166,9 +266,21 @@ async fn body_loop<'a>(
     Ok(())
 }
 
-async fn handle_request(req: Request, mut writer: TcpStream) -> Result<()> {
-    mpsc::unbounded::<(String, Receiver<String>)>();
-    let mut res = handler.run(req).await;
+async fn handle_request<Routes: Send + Sync + Copy + Clone + 'static>(
+    req: Request,
+    mut writer: TcpStream,
+    router: Arc<Router<Routes>>,
+) -> Result<()> {
+    let handler = match router.routes.get(&req.path()) {
+        Some(route) => route,
+        None => &router.not_found,
+    };
+    let context = Context {
+        req: req,
+        endpoint: handler,
+        next_middleware: router.middleware.as_slice(),
+    };
+    let mut res = context.next().await;
     writer.write_all(res.to_bytes().as_slice()).await.unwrap();
     Ok(())
 }
@@ -203,6 +315,17 @@ impl Request {
 
     pub fn set_body(&mut self, receiver: Receiver<Event>) {
         self.body = Arc::new(Mutex::new(Some(receiver)))
+    }
+
+    pub fn keep_alive(&self) -> bool {
+        self.headers
+            .get("connection")
+            .map(|h| h.parse().unwrap())
+            .unwrap_or(false)
+    }
+
+    pub fn path(&self) -> Path {
+        Path::new(self.method, self.path.clone())
     }
 
     pub async fn json(&mut self) -> serde_json::Value {
@@ -295,6 +418,36 @@ where
     }
 }
 
+pub trait Middleware: Send + Sync {
+    fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response>;
+}
+
+impl<F> Middleware for F
+where
+    F: Send + Sync + Fn(Context) -> BoxFuture<Response>,
+{
+    fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response> {
+        (self)(ctx)
+    }
+}
+
+pub struct Context<'a> {
+    pub req: Request,
+    pub(crate) endpoint: &'a Box<dyn Route>,
+    pub(crate) next_middleware: &'a [Arc<dyn Middleware>],
+}
+
+impl<'a> Context<'a> {
+    pub fn next(mut self) -> BoxFuture<'a, Response> {
+        if let Some((current, next)) = self.next_middleware.split_first() {
+            self.next_middleware = next;
+            current.handle(self)
+        } else {
+            self.endpoint.run(self.req)
+        }
+    }
+}
+
 pub struct Response {
     pub status: Status,
     pub headers: HashMap<String, String>,
@@ -364,24 +517,42 @@ impl Status {
     }
 }
 
-async fn handler(mut req: Request) -> Response {
-    let json = req.json().await;
-    let mut res = Response::status(Status::Ok);
-    res.json(json);
-    res
+async fn not_found(_req: Request) -> Response {
+    Response::status(Status::NotFound)
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::App;
+    use crate::{App, Context, Request, Response, Status};
+    use futures::Future;
+    use rand::{thread_rng, Rng};
     use reqwest::Client;
     use serde_json::{json, Value};
-    use std::thread;
+    use std::{pin::Pin, thread};
+
+    type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
+
+    async fn handler(mut req: Request) -> Response {
+        let json = req.json().await;
+        let mut res = Response::status(Status::Ok);
+        res.json(json);
+        res
+    }
+
+    fn logger(ctx: Context) -> BoxFuture<Response> {
+        println!("request recived: {}", ctx.req.path);
+        ctx.next()
+    }
+
     #[tokio::test]
     async fn get() -> Result<(), Box<dyn std::error::Error>> {
+        let mut rng = thread_rng();
+        let port: u32 = rng.gen_range(10000, 20000);
         thread::spawn(move || {
-            let app = App::new();
-            app.run()
+            let mut app = App::new(());
+            app.get("/foo", handler);
+            app.middleware(logger);
+            app.run(port)
         });
 
         println!("making request...");
@@ -392,7 +563,7 @@ mod tests {
             "hello": "world"
         });
         let resp = client
-            .get("http://127.0.0.1:8080/foo")
+            .get(&format!("http://127.0.0.1:{}/foo", port))
             .json(&body)
             .send()
             .await?;
@@ -404,9 +575,12 @@ mod tests {
 
     #[tokio::test]
     async fn post() -> Result<(), Box<dyn std::error::Error>> {
+        let mut rng = thread_rng();
+        let port: u32 = rng.gen_range(10000, 20000);
         thread::spawn(move || {
-            let app = App::new();
-            app.run()
+            let mut app = App::new(());
+            app.post("/foo", handler);
+            app.run(port)
         });
 
         println!("making request...");
@@ -417,22 +591,26 @@ mod tests {
             "hello": "world"
         });
         let resp = client
-            .post("http://127.0.0.1:8080/bar")
+            .post(&format!("http://127.0.0.1:{}/foo", port))
             .json(&body)
             .send()
             .await?;
-        println!("response status {:?}", resp.status());
         let json = resp.json::<Value>().await?;
-        println!("response json {:?}", json);
+
         assert_eq!(body, json);
+
         Ok(())
     }
 
     #[tokio::test]
     async fn large() -> Result<(), Box<dyn std::error::Error>> {
+        let mut rng = thread_rng();
+        let port: u32 = rng.gen_range(10000, 20000);
         thread::spawn(move || {
-            let app = App::new();
-            app.run()
+            let mut app = App::new(());
+            app.post("/foo", handler);
+            app.middleware(logger);
+            app.run(port)
         });
 
         let client = Client::new();
@@ -460,23 +638,25 @@ mod tests {
         for _ in 0..2 {
             println!("making request...");
             let resp = client
-                .post("http://127.0.0.1:8080/bar")
+                .post(&format!("http://127.0.0.1:{}/foo", port))
                 .json(&body)
                 .send()
                 .await?;
-            println!("response status {:?}", resp.status());
             let json = resp.json::<Value>().await?;
-            println!("response json {:?}", json);
             assert_eq!(body, json);
         }
+
         Ok(())
     }
 
     #[tokio::test]
     async fn keep_alive() -> Result<(), Box<dyn std::error::Error>> {
+        let mut rng = thread_rng();
+        let port: u32 = rng.gen_range(10000, 20000);
         thread::spawn(move || {
-            let app = App::new();
-            app.run()
+            let mut app = App::new(());
+            app.post("/foo", handler);
+            app.run(port)
         });
 
         let client = Client::new();
@@ -498,21 +678,17 @@ mod tests {
     What here shall miss, our toil shall strive to mend.",
         });
 
-        println!("content-length {}", body.to_string());
-        println!("content-length {}", body.to_string().len());
-
         for _ in 0..2 {
             println!("making request...");
             let resp = client
-                .post("http://127.0.0.1:8080/bar")
+                .post(&format!("http://127.0.0.1:{}/foo", port))
                 .json(&body)
                 .send()
                 .await?;
-            println!("response status {:?}", resp.status());
             let json = resp.json::<Value>().await?;
-            println!("response json {:?}", json);
             assert_eq!(body, json);
         }
+
         Ok(())
     }
 }
