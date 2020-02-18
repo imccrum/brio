@@ -1,7 +1,7 @@
 #![feature(async_closure)]
 
 use async_std::{
-    net::{TcpListener, TcpStream, ToSocketAddrs},
+    net::{TcpListener, TcpStream},
     prelude::*,
     task,
 };
@@ -57,7 +57,7 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
     }
     pub fn run(self, port: u32) -> Result<()> {
         let router = Arc::new(self.router);
-        task::block_on(accept_loop(format!("127.0.0.1:{}", port), router))
+        task::block_on(accept_loop("127.0.0.1", port, router))
     }
     pub fn get(&mut self, path: &'static str, handler: impl Route) -> &Self {
         self.add_route(Path::new(Method::Get, path.to_owned()), handler);
@@ -118,10 +118,12 @@ impl Path {
 }
 
 async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
-    addr: impl ToSocketAddrs,
+    host: &'static str,
+    port: u32,
     router: Arc<Router<Routes>>,
 ) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind(format!("{}:{}", host, port)).await?;
+    println!("listening on {}:{}", host, port);
     let mut incoming = listener.incoming();
     let mut sigterm_rx = register_sigterm_listener()?.fuse();
     loop {
@@ -152,6 +154,7 @@ async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     loop {
         if !request_loop(&mut stream, router.clone()).await? {
             // not keep-alive
+            println!("not keep alive closing");
             break;
         }
     }
@@ -174,7 +177,7 @@ async fn request_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     if req.content_length > 0 {
         req.set_body(body_receiver)
     }
-    let keep_alive = req.keep_alive();
+    let keep_alive = req.is_keep_alive();
 
     let request_handle = task::spawn(handle_request(req, writer, router));
     let body_handle = body_loop(&mut reader, body_read, content_length, body_sender);
@@ -190,7 +193,7 @@ async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<
         if bytes_read == 0 {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
-                "disconnected",
+                "client disconnected",
             )));
         }
         let mut headers = [httparse::EMPTY_HEADER; 16];
@@ -210,13 +213,10 @@ async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<
                     )
                 })
                 .collect();
-            let content_length: usize = headers
-                .get("content-length")
-                .ok_or(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "missing content-length",
-                )))?
-                .parse()?;
+            let content_length: usize = match headers.get("content-length") {
+                Some(cl) => cl.parse()?,
+                None => 0,
+            };
             let header_end: usize = header_len - total_bytes_read;
             let body_end: usize = header_end + content_length;
             // read body
@@ -318,10 +318,10 @@ impl Request {
         self.body = Arc::new(Mutex::new(Some(receiver)))
     }
 
-    pub fn keep_alive(&self) -> bool {
+    pub fn is_keep_alive(&self) -> bool {
         self.headers
             .get("connection")
-            .map(|h| h.parse().unwrap())
+            .map(|h| "keep-alive" == h)
             .unwrap_or(false)
     }
 
@@ -329,33 +329,48 @@ impl Request {
         Path::new(self.method, self.path.clone())
     }
 
-    pub async fn json(&mut self) -> serde_json::Value {
-        self.body().await;
+    pub async fn json(&mut self) -> Result<serde_json::Value> {
+        self.body().await?;
         println!("utf8 {:?}", std::str::from_utf8(&self.bytes));
-        serde_json::from_slice(&self.bytes.as_slice()).unwrap()
+        Ok(serde_json::from_slice(&self.bytes.as_slice())?)
     }
 
-    pub async fn bytes(&mut self) -> &Vec<u8> {
-        self.body().await;
-        &self.bytes
+    pub async fn bytes(&mut self) -> Result<&Vec<u8>> {
+        self.body().await?;
+        Ok(&self.bytes)
     }
 
-    async fn body(&mut self) {
-        let take = self.body.clone().lock().unwrap().take();
-        let mut stream = take.unwrap().fuse();
-        while self.bytes.len() < self.content_length as usize {
-            let chunk = select! {
-                chunk = stream.next().fuse() => match chunk {
-                    None => break, // 2
-                    Some(chunk) => chunk,
-                },
-            };
-            match chunk {
-                Event::Message { msg, size } => {
-                    self.bytes.extend_from_slice(&msg[..size]);
+    async fn body(&mut self) -> Result<()> {
+        let take = self
+            .body
+            .clone()
+            .lock()
+            .or(Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "",
+            ))))?
+            .take();
+
+        match take {
+            Some(take) => {
+                let mut stream = take.fuse();
+                while self.bytes.len() < self.content_length as usize {
+                    let chunk = select! {
+                        chunk = stream.next().fuse() => match chunk {
+                            None => break, // 2
+                            Some(chunk) => chunk,
+                        },
+                    };
+                    match chunk {
+                        Event::Message { msg, size } => {
+                            self.bytes.extend_from_slice(&msg[..size]);
+                        }
+                    }
                 }
             }
+            None => {}
         }
+        Ok(())
     }
 }
 #[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
@@ -534,7 +549,12 @@ mod tests {
     type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
     async fn handler(mut req: Request) -> Response {
-        let json = req.json().await;
+        let json = match req.json().await {
+            Ok(json) => json,
+            Err(_err) => {
+                return Response::status(Status::BadRequest);
+            }
+        };
         let mut res = Response::status(Status::Ok);
         res.json(json);
         res
