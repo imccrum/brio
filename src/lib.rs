@@ -5,48 +5,35 @@ use async_std::{
     prelude::*,
     task,
 };
-use futures::channel::mpsc;
-use futures::sink::SinkExt;
-use futures::{join, select, FutureExt};
+use futures::{channel::mpsc, join, select, sink::SinkExt, FutureExt};
+use futures_timer::Delay;
 use std::{
-    cmp,
-    collections::hash_map::HashMap,
-    future::Future,
-    pin::Pin,
-    str,
-    sync::{Arc, Mutex},
-    thread,
+    cmp, collections::hash_map::HashMap, future::Future, pin::Pin, str, sync::Arc, thread,
+    time::Duration,
 };
 
-const BUF_LEN: usize = 256;
+mod request;
+mod response;
+mod router;
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-type Sender<T> = mpsc::Sender<T>;
-type Receiver<T> = mpsc::Receiver<T>;
-type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
+pub use request::Request;
+pub use response::{Response, Status};
+pub use router::Context;
 
+use request::Method;
+use router::{Middleware, Path, Route, Router};
+
+pub const BUF_LEN: usize = 256;
+pub const KEEP_ALIVE_TIMEOUT: u64 = 10;
+
+pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+pub(crate) type Sender<T> = mpsc::Sender<T>;
+pub(crate) type Receiver<T> = mpsc::Receiver<T>;
+pub(crate) type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 #[derive(Debug)]
 pub enum Void {}
-
 pub struct App<Routes> {
     router: Router<Routes>,
-}
-
-fn register_sigterm_listener() -> Result<futures::channel::oneshot::Receiver<bool>> {
-    let signals =
-        signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
-    let (sigterm_tx, sigterm_rx) = futures::channel::oneshot::channel::<bool>();
-    thread::spawn(move || {
-        let mut count = 0u32;
-        for _signal in signals.forever() {
-            count += 1;
-            if count > 0 {
-                break;
-            }
-        }
-        sigterm_tx.send(true).expect("shutdown notify failed");
-    });
-    Ok(sigterm_rx)
 }
 
 impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
@@ -87,36 +74,6 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
     }
 }
 
-pub struct Router<Routes> {
-    pub routes: HashMap<Path, Box<dyn Route + 'static>>,
-    pub middleware: Vec<Arc<dyn Middleware>>,
-    pub config: Routes,
-    pub not_found: Box<dyn Route + 'static>,
-}
-
-impl<Routes: Send + Sync + Copy + Clone + 'static> Router<Routes> {
-    pub fn new(config: Routes) -> Router<Routes> {
-        Router {
-            routes: HashMap::new(),
-            middleware: vec![],
-            config: config,
-            not_found: Box::new(not_found),
-        }
-    }
-}
-
-#[derive(Debug, Hash, Eq, PartialEq)]
-pub struct Path {
-    method: Method,
-    path: String,
-}
-
-impl Path {
-    pub fn new(method: Method, path: String) -> Path {
-        Path { method, path }
-    }
-}
-
 async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     host: &'static str,
     port: u32,
@@ -130,11 +87,13 @@ async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
         select! {
             stream = incoming.next().fuse() => match stream {
                 Some(stream) => {
+                    println!("DEBUG did something happen yes?");
                     let stream = stream?;
                     println!("accepting from: {}", stream.peer_addr()?);
                     spawn_and_log_error(keep_alive_loop(stream, router.clone()));
                 },
                 None => {
+                    println!("DEBUG did something happen no?");
                     break;
                 }
             },
@@ -147,15 +106,32 @@ async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     Ok(())
 }
 
+fn spawn_and_log_error<F>(fut: F) -> task::JoinHandle<()>
+where
+    F: Future<Output = Result<()>> + Send + 'static,
+{
+    task::spawn(async move {
+        if let Err(e) = fut.await {
+            eprintln!("{}", e)
+        }
+    })
+}
+
 async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     mut stream: TcpStream,
     router: Arc<Router<Routes>>,
 ) -> Result<()> {
     loop {
-        if !request_loop(&mut stream, router.clone()).await? {
-            // not keep-alive
-            println!("not keep alive closing");
-            break;
+        select! {
+            keep_alive = request_loop(&mut stream, router.clone()).fuse() => {
+                if !keep_alive? {
+                    println!("client did not request keep-alive, closing..");
+                    break;
+                }
+            },
+            _ = Delay::new(Duration::from_secs(KEEP_ALIVE_TIMEOUT)).fuse() => {
+                println!("keep-alive timeout expired, closing..");
+            }
         }
     }
     Ok(())
@@ -177,13 +153,12 @@ async fn request_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     if req.content_length > 0 {
         req.set_body(body_receiver)
     }
-    let keep_alive = req.is_keep_alive();
 
     let request_handle = task::spawn(handle_request(req, writer, router));
     let body_handle = body_loop(&mut reader, body_read, content_length, body_sender);
-    let _ = join!(body_handle, request_handle);
+    let (_, keep_alive) = join!(body_handle, request_handle);
 
-    Ok(keep_alive)
+    Ok(keep_alive?)
 }
 
 async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<Request> {
@@ -219,7 +194,6 @@ async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<
             };
             let header_end: usize = header_len - total_bytes_read;
             let body_end: usize = header_end + content_length;
-            // read body
             let mut bytes = vec![];
             bytes.extend_from_slice(&buf[header_end..cmp::min(body_end, BUF_LEN)]);
             return Ok(Request::from_parts(
@@ -248,11 +222,12 @@ async fn body_loop<'a>(
                         // disconnected
                         break;
                     }
-                    body_sender
-                        .send(Event::Message { msg: body_buf, size: bytes_read })
-                        .await
-                        .unwrap();
                     body_read += bytes_read;
+                    if let Err(err) = body_sender
+                        .send(Event::Message { msg: body_buf, size: bytes_read })
+                        .await {
+                            break;
+                        }
                 },
                 Err(err) => {
                     break;
@@ -262,6 +237,7 @@ async fn body_loop<'a>(
     }
     drop(body_sender);
     if body_read < content_length {
+        println!("skipping remaining bytes???");
         futures::io::copy(body, &mut futures::io::sink()).await?;
     }
     Ok(())
@@ -271,7 +247,8 @@ async fn handle_request<Routes: Send + Sync + Copy + Clone + 'static>(
     req: Request,
     mut writer: TcpStream,
     router: Arc<Router<Routes>>,
-) -> Result<()> {
+) -> Result<bool> {
+    let keep_alive = req.is_keep_alive();
     let handler = match router.routes.get(&req.path()) {
         Some(route) => route,
         None => &router.not_found,
@@ -282,255 +259,37 @@ async fn handle_request<Routes: Send + Sync + Copy + Clone + 'static>(
         next_middleware: router.middleware.as_slice(),
     };
     let mut res = context.next().await;
+    if keep_alive {
+        res.headers
+            .insert("connection".to_owned(), "keep-alive".to_owned());
+        res.headers.insert(
+            "keep-alive".to_owned(),
+            format!("timeout={}, max=1000", KEEP_ALIVE_TIMEOUT),
+        );
+    }
     writer.write_all(res.to_bytes().as_slice()).await.unwrap();
-    Ok(())
-}
-
-pub struct Request {
-    pub bytes: Vec<u8>,
-    pub version: u8,
-    pub method: Method,
-    pub path: String,
-    pub headers: HashMap<String, String>,
-    pub content_length: u64,
-    pub body: Arc<Mutex<Option<Receiver<Event>>>>,
-}
-
-impl Request {
-    fn from_parts(
-        parsed: httparse::Request,
-        bytes: Vec<u8>,
-        content_length: u64,
-        headers: HashMap<String, String>,
-    ) -> Result<Request> {
-        Ok(Request {
-            bytes: bytes,
-            version: parsed.version.unwrap(),
-            path: parsed.path.unwrap().to_owned(),
-            method: parsed.method.unwrap().to_lowercase().parse().unwrap(),
-            headers: headers,
-            content_length: content_length,
-            body: Arc::new(Mutex::new(None)),
-        })
-    }
-
-    pub fn set_body(&mut self, receiver: Receiver<Event>) {
-        self.body = Arc::new(Mutex::new(Some(receiver)))
-    }
-
-    pub fn is_keep_alive(&self) -> bool {
-        self.headers
-            .get("connection")
-            .map(|h| "keep-alive" == h)
-            .unwrap_or(false)
-    }
-
-    pub fn path(&self) -> Path {
-        Path::new(self.method, self.path.clone())
-    }
-
-    pub async fn json(&mut self) -> Result<serde_json::Value> {
-        self.body().await?;
-        println!("utf8 {:?}", std::str::from_utf8(&self.bytes));
-        Ok(serde_json::from_slice(&self.bytes.as_slice())?)
-    }
-
-    pub async fn bytes(&mut self) -> Result<&Vec<u8>> {
-        self.body().await?;
-        Ok(&self.bytes)
-    }
-
-    async fn body(&mut self) -> Result<()> {
-        let take = self
-            .body
-            .clone()
-            .lock()
-            .or(Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "",
-            ))))?
-            .take();
-
-        match take {
-            Some(take) => {
-                let mut stream = take.fuse();
-                while self.bytes.len() < self.content_length as usize {
-                    let chunk = select! {
-                        chunk = stream.next().fuse() => match chunk {
-                            None => break, // 2
-                            Some(chunk) => chunk,
-                        },
-                    };
-                    match chunk {
-                        Event::Message { msg, size } => {
-                            self.bytes.extend_from_slice(&msg[..size]);
-                        }
-                    }
-                }
-            }
-            None => {}
-        }
-        Ok(())
-    }
-}
-#[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
-pub enum Method {
-    Get,
-    Head,
-    Post,
-    Put,
-    Delete,
-    Connect,
-    Options,
-    Trace,
-    Patch,
-}
-
-impl std::str::FromStr for Method {
-    type Err = ();
-    fn from_str(s: &str) -> std::result::Result<Self, ()> {
-        match s {
-            "get" => Ok(Method::Get),
-            "head" => Ok(Method::Head),
-            "post" => Ok(Method::Post),
-            "put" => Ok(Method::Put),
-            "delete" => Ok(Method::Delete),
-            "connect" => Ok(Method::Connect),
-            "options" => Ok(Method::Options),
-            "trace" => Ok(Method::Trace),
-            "patch" => Ok(Method::Patch),
-            _ => Err(()),
-        }
-    }
+    Ok(keep_alive)
 }
 
 pub enum Event {
     Message { msg: [u8; BUF_LEN], size: usize },
 }
 
-fn spawn_and_log_error<F>(fut: F) -> task::JoinHandle<()>
-where
-    F: Future<Output = Result<()>> + Send + 'static,
-{
-    task::spawn(async move {
-        if let Err(e) = fut.await {
-            eprintln!("{}", e)
+fn register_sigterm_listener() -> Result<futures::channel::oneshot::Receiver<bool>> {
+    let signals =
+        signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
+    let (sigterm_tx, sigterm_rx) = futures::channel::oneshot::channel::<bool>();
+    thread::spawn(move || {
+        let mut count = 0u32;
+        for _signal in signals.forever() {
+            count += 1;
+            if count > 0 {
+                break;
+            }
         }
-    })
-}
-
-pub trait Route: Send + Sync + 'static {
-    fn run<'a>(&'a self, req: Request) -> BoxFuture<'a, Response>;
-}
-
-impl<F: Send + Sync + 'static, Fut> Route for F
-where
-    F: Fn(Request) -> Fut,
-    Fut: Future<Output = Response> + Send + 'static,
-{
-    fn run<'a>(&'a self, req: Request) -> BoxFuture<'a, Response> {
-        let fut = (self)(req);
-        Box::pin(async move { fut.await })
-    }
-}
-
-pub trait Middleware: Send + Sync {
-    fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response>;
-}
-
-impl<F> Middleware for F
-where
-    F: Send + Sync + Fn(Context) -> BoxFuture<Response>,
-{
-    fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response> {
-        (self)(ctx)
-    }
-}
-
-pub struct Context<'a> {
-    pub req: Request,
-    pub(crate) endpoint: &'a Box<dyn Route>,
-    pub(crate) next_middleware: &'a [Arc<dyn Middleware>],
-}
-
-impl<'a> Context<'a> {
-    pub fn next(mut self) -> BoxFuture<'a, Response> {
-        if let Some((current, next)) = self.next_middleware.split_first() {
-            self.next_middleware = next;
-            current.handle(self)
-        } else {
-            self.endpoint.run(self.req)
-        }
-    }
-}
-
-pub struct Response {
-    pub status: Status,
-    pub headers: HashMap<String, String>,
-    pub body: Vec<u8>,
-    pub bytes: Vec<u8>,
-    pub content_length: usize,
-}
-
-impl Response {
-    pub fn status(status: Status) -> Response {
-        Response {
-            status,
-            headers: HashMap::new(),
-            body: vec![],
-            bytes: vec![],
-            content_length: 0,
-        }
-    }
-
-    pub fn json(&mut self, json: serde_json::Value) {
-        self.body = json.to_string().into_bytes();
-    }
-
-    pub fn to_bytes(&mut self) -> Vec<u8> {
-        let mut bytes: Vec<u8> = vec![];
-        self.headers
-            .insert("content-length".to_owned(), self.body.len().to_string());
-        if !self.body.is_empty() {
-            self.headers
-                .insert("content-type".to_owned(), "application/json".to_owned());
-        }
-        bytes.extend_from_slice(b"HTTP/1.1 ");
-        bytes.extend_from_slice(self.status.bytes());
-        let mut headers: Vec<u8> = self
-            .headers
-            .drain()
-            .flat_map(|mut e| {
-                e.0.push_str(": ");
-                e.0.push_str(&e.1);
-                e.0.push_str("\r\n");
-                e.0.into_bytes()
-            })
-            .collect();
-        bytes.append(&mut headers);
-        bytes.extend_from_slice(b"\r\n");
-        bytes.append(&mut self.body);
-        bytes
-    }
-}
-
-#[derive(Debug)]
-pub enum Status {
-    Ok,
-    BadRequest,
-    NotFound,
-    RequestTimeout,
-}
-
-impl Status {
-    pub fn bytes(&self) -> &[u8] {
-        match *self {
-            Status::Ok => b"200 OK\r\n",
-            Status::BadRequest => b"400 Bad Request\r\n",
-            Status::NotFound => b"404 Not Found\r\n",
-            Status::RequestTimeout => b"408 Request Timeout\r\n",
-        }
-    }
+        sigterm_tx.send(true).expect("shutdown notify failed");
+    });
+    Ok(sigterm_rx)
 }
 
 async fn not_found(_req: Request) -> Response {
@@ -539,12 +298,26 @@ async fn not_found(_req: Request) -> Response {
 
 #[cfg(test)]
 mod tests {
+
+    //cargo test keeps_buffer -- --nocapture --test-threads=1
+
     use crate::{App, Context, Request, Response, Status};
     use futures::Future;
+    use httparse;
+    use hyper::{Client, Uri};
     use rand::{thread_rng, Rng};
-    use reqwest::Client;
     use serde_json::{json, Value};
-    use std::{pin::Pin, thread};
+    use std::panic;
+
+    use std::{
+        cmp,
+        collections::HashMap,
+        io::prelude::*,
+        net::{Shutdown, TcpStream},
+        pin::Pin,
+        thread, time,
+        time::Duration,
+    };
 
     type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
@@ -571,25 +344,15 @@ mod tests {
         let port: u32 = rng.gen_range(10000, 20000);
         thread::spawn(move || {
             let mut app = App::new(());
-            app.get("/foo", handler);
+            app.get("/bar", async move |_req| Response::status(Status::Ok));
             app.middleware(logger);
             app.run(port)
         });
 
-        println!("making request...");
-
         let client = Client::new();
-
-        let body = json!({
-            "hello": "world"
-        });
-        let resp = client
-            .get(&format!("http://127.0.0.1:{}/foo", port))
-            .json(&body)
-            .send()
-            .await?;
-
-        println!("response status {:?}", resp.status());
+        let uri: Uri = format!("http://127.0.0.1:{}/bar", port).parse()?;
+        let resp = client.get(uri).await?;
+        assert_eq!(resp.status(), 200);
 
         Ok(())
     }
@@ -604,69 +367,48 @@ mod tests {
             app.run(port)
         });
 
-        println!("making request...");
-
+        let body = json!({"hello": "world"});
         let client = Client::new();
+        let uri: Uri = format!("http://127.0.0.1:{}/foo", port).parse()?;
+        let req = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(hyper::Body::from(serde_json::to_vec(&body)?))?;
 
-        let body = json!({
-            "hello": "world"
-        });
-        let resp = client
-            .post(&format!("http://127.0.0.1:{}/foo", port))
-            .json(&body)
-            .send()
-            .await?;
-        let json = resp.json::<Value>().await?;
-
+        let resp = client.request(req).await?;
+        assert_eq!(resp.status(), 200);
+        let buf = hyper::body::to_bytes(resp).await?;
+        let json = serde_json::from_slice::<Value>(&buf)?;
         assert_eq!(body, json);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn large() -> Result<(), Box<dyn std::error::Error>> {
+    async fn multiple_chunks() -> Result<(), Box<dyn std::error::Error>> {
         let mut rng = thread_rng();
         let port: u32 = rng.gen_range(10000, 20000);
         thread::spawn(move || {
             let mut app = App::new(());
             app.post("/foo", handler);
-            app.get("/baz", async move |_req: Request| {
-                Response::status(Status::Ok)
-            });
             app.middleware(logger);
             app.run(port)
         });
 
         let client = Client::new();
-        let body = json!({
-            "text":
-            "Two households, both alike in dignity,
-    In fair Verona, where we lay our scene,
-    From ancient grudge break to new mutiny,
-    Where civil blood makes civil hands unclean.
-    From forth the fatal loins of these two foes
-    A pair of star-cross'd lovers take their life;
-    Whose misadventured piteous overthrows
-    Do with their death bury their parents' strife.
-    The fearful passage of their death-mark'd love,
-    And the continuance of their parents' rage,
-    Which, but their children's end, nought could remove,
-    Is now the two hours' traffic of our stage;
-    The which if you with patient ears attend,
-    What here shall miss, our toil shall strive to mend.",
-        });
-
-        println!("content-length {}", body.to_string());
-        println!("content-length {}", body.to_string().len());
-
+        let uri: Uri = format!("http://127.0.0.1:{}/foo", port).parse()?;
         for _ in 0..2 {
-            println!("making request...");
-            let resp = client
-                .post(&format!("http://127.0.0.1:{}/foo", port))
-                .json(&body)
-                .send()
-                .await?;
-            let json = resp.json::<Value>().await?;
+            let body = large_body();
+            let req = hyper::Request::builder()
+                .method(hyper::Method::POST)
+                .uri(uri.clone())
+                .header("content-type", "application/json")
+                .body(hyper::Body::from(serde_json::to_vec(&body)?))?;
+            let resp = client.request(req).await?;
+            assert_eq!(resp.status(), 200);
+            let buf = hyper::body::to_bytes(resp).await?;
+            let json = serde_json::from_slice::<Value>(&buf)?;
             assert_eq!(body, json);
         }
 
@@ -674,17 +416,161 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn keep_alive() -> Result<(), Box<dyn std::error::Error>> {
+    async fn skip_body() -> Result<(), Box<dyn std::error::Error>> {
         let mut rng = thread_rng();
         let port: u32 = rng.gen_range(10000, 20000);
         thread::spawn(move || {
             let mut app = App::new(());
             app.post("/foo", handler);
+            app.post("/bar", async move |_req| Response::status(Status::Ok));
+            app.middleware(logger);
             app.run(port)
         });
 
+        let body = large_body();
+        let arr = vec![body.clone(), body.clone()];
+
         let client = Client::new();
-        let body = json!({
+
+        let uri: Uri = format!("http://127.0.0.1:{}/bar", port).parse()?;
+        let req = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(uri.clone())
+            .header("content-type", "application/json")
+            .body(hyper::Body::from(serde_json::to_vec(&arr)?))?;
+        let resp = client.request(req).await?;
+        assert_eq!(resp.status(), 200);
+
+        let uri: Uri = format!("http://127.0.0.1:{}/foo", port).parse()?;
+        let req = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(uri.clone())
+            .header("content-type", "application/json")
+            .body(hyper::Body::from(serde_json::to_vec(&body)?))?;
+        let resp = client.request(req).await?;
+        assert_eq!(resp.status(), 200);
+        let buf = hyper::body::to_bytes(resp).await?;
+        let json = serde_json::from_slice::<Value>(&buf)?;
+        assert_eq!(body, json);
+
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_buffer() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let port: u32 = run_app();
+        let uri = format!("127.0.0.1:{}", port);
+        let body = json!({"hello": "world"});
+        let mut req = connect(&uri)?;
+        req.write_all(
+            b"\
+            POST /foo HTTP/1.1\r\n\
+            Host: localhost\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: 18\r\n\
+            \r\n\
+            {\"hello\": \"world\"}\r\n\
+        ",
+        )
+        .unwrap();
+
+        let (_headers, _body) = parse(&mut req)?;
+        println!("headers {:?}, body {:?}", _headers, _body);
+        let json = serde_json::from_slice::<Value>(&_body)?;
+        assert_eq!(body, json);
+        Ok(())
+    }
+
+    fn parse<'a>(
+        req: &'a mut TcpStream,
+    ) -> Result<(HashMap<String, String>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
+        pub const BUF_LEN: usize = 256;
+        let mut total_bytes_read = 0;
+        loop {
+            let mut buf = [0u8; BUF_LEN];
+            let bytes_read = req.read(&mut buf)?;
+            if bytes_read == 0 {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "client disconnected",
+                )));
+            }
+            let mut headers = [httparse::EMPTY_HEADER; 16];
+            let mut parser = httparse::Response::new(&mut headers);
+            let parse_res = parser.parse(&buf)?;
+            if parse_res.is_partial() {
+                total_bytes_read += bytes_read;
+            } else {
+                let header_len = parse_res.unwrap();
+                let headers: HashMap<String, String> = parser
+                    .headers
+                    .iter()
+                    .map(|&x| {
+                        (
+                            x.name.to_owned().to_lowercase(),
+                            std::str::from_utf8(x.value).unwrap().to_owned(),
+                        )
+                    })
+                    .collect();
+                let content_length: usize = match headers.get("content-length") {
+                    Some(cl) => cl.parse()?,
+                    None => 0,
+                };
+                let header_end: usize = header_len - total_bytes_read;
+                let body_end: usize = header_end + content_length;
+                let mut bytes = vec![];
+                bytes.extend_from_slice(&buf[header_end..cmp::min(body_end, BUF_LEN)]);
+
+                let mut take = req.take((content_length - bytes.len()) as u64);
+                take.read_to_end(&mut bytes)?;
+                return Ok((headers, bytes));
+            }
+        }
+    }
+
+    fn run_app() -> u32 {
+        let mut rng = thread_rng();
+        let port: u32 = rng.gen_range(10000, 20000);
+        thread::spawn(move || {
+            let mut app = App::new(());
+            app.post("/foo", handler);
+            app.post("/bar", async move |_req| Response::status(Status::Ok));
+            app.middleware(logger);
+            app.run(port)
+        });
+
+        let mut attempts = 0;
+        while attempts < 10 {
+            match connect(&format!("127.0.0.1:{}", port)) {
+                Ok(req) => {
+                    req.shutdown(Shutdown::Both).unwrap();
+                    break;
+                }
+                Err(_) => {
+                    if attempts > 10 {
+                        panic!("could not connect!");
+                    } else {
+                        thread::sleep(time::Duration::from_millis(10));
+                        attempts += 1;
+                    }
+                }
+            }
+        }
+
+        port
+    }
+
+    fn connect(
+        addr: &str,
+    ) -> Result<std::net::TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+        let req = TcpStream::connect(addr)?;
+        req.set_read_timeout(Some(Duration::from_secs(1)))?;
+        req.set_write_timeout(Some(Duration::from_secs(1)))?;
+        Ok(req)
+    }
+
+    fn large_body() -> Value {
+        json!({
             "text":
             "Two households, both alike in dignity,
     In fair Verona, where we lay our scene,
@@ -700,19 +586,6 @@ mod tests {
     Is now the two hours' traffic of our stage;
     The which if you with patient ears attend,
     What here shall miss, our toil shall strive to mend.",
-        });
-
-        for _ in 0..2 {
-            println!("making request...");
-            let resp = client
-                .post(&format!("http://127.0.0.1:{}/foo", port))
-                .json(&body)
-                .send()
-                .await?;
-            let json = resp.json::<Value>().await?;
-            assert_eq!(body, json);
-        }
-
-        Ok(())
+        })
     }
 }

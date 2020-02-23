@@ -4,11 +4,14 @@ use loops::Context;
 use loops::Request;
 use loops::Response;
 use loops::Status;
-use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
 
 type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
+
+// curl -v -H 'connection:keep-alive' localhost:8000/foo localhost:8000/foo
+// curl -v --http1.0 -H 'connection:keep-alive' localhost:8000/foo localhost:8000/foo
+// curl -v -X POST localhost:8000/bar -d '{"hello": "world"}'
 
 fn main() {
     let mut app = App::new(());
@@ -25,10 +28,13 @@ fn logger(ctx: Context) -> BoxFuture<Response> {
     ctx.next()
 }
 
-async fn foo(_req: Request) -> Response {
-    let json = json!({
-        "hello": "world"
-    });
+async fn foo(mut req: Request) -> Response {
+    let json = match req.json().await {
+        Ok(json) => json,
+        Err(_err) => {
+            return Response::status(Status::BadRequest);
+        }
+    };
     let mut res = Response::status(Status::Ok);
     res.json(json);
     res
