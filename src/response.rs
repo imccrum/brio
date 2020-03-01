@@ -1,3 +1,4 @@
+use crate::Result;
 use std::collections::hash_map::HashMap;
 
 pub struct Response {
@@ -48,13 +49,27 @@ impl Response {
         bytes.append(&mut self.body);
         bytes
     }
+
+    pub fn from_parts(
+        parsed: httparse::Response,
+        bytes: Vec<u8>,
+        content_length: usize,
+        headers: HashMap<String, String>,
+    ) -> Result<Response> {
+        Ok(Response {
+            status: Status::new(parsed.code.unwrap()).unwrap(),
+            headers: headers,
+            body: vec![],
+            bytes: bytes,
+            content_length: content_length,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub enum Status {
     Continue,
     SwitchingProtocol,
-    EarlyHints,
     Ok,
     BadRequest,
     NotFound,
@@ -62,11 +77,21 @@ pub enum Status {
 }
 
 impl Status {
+    pub fn new(code: u16) -> Option<Status> {
+        match code {
+            100 => Some(Status::Continue),
+            101 => Some(Status::SwitchingProtocol),
+            200 => Some(Status::Ok),
+            400 => Some(Status::BadRequest),
+            404 => Some(Status::NotFound),
+            408 => Some(Status::RequestTimeout),
+            _ => None,
+        }
+    }
     pub fn bytes(&self) -> &[u8] {
         match *self {
             Status::Continue => b"100 Continue\r\n",
             Status::SwitchingProtocol => b"101 Switching Protocol\r\n",
-            Status::EarlyHints => b"103 Early Hints\r\n",
             Status::Ok => b"200 OK\r\n",
             Status::BadRequest => b"400 Bad Request\r\n",
             Status::NotFound => b"404 Not Found\r\n",

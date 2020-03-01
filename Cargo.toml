@@ -1,5 +1,5 @@
 [package]
-name = "loops"
+name = "brio"
 version = "0.1.0"
 authors = ["imccrum <ianmccrum@gmail.com>"]
 edition = "2018"

@@ -1,4 +1,4 @@
-use crate::{Event, Path, Receiver, Result};
+use crate::{Path, Receiver, Result};
 use async_std::prelude::*;
 use futures::{select, FutureExt};
 use std::{
@@ -42,6 +42,13 @@ impl Request {
         match self.headers.get("connection") {
             Some(connection) => "keep-alive" == connection,
             None => self.version == 1,
+        }
+    }
+
+    pub fn transfer_endcoding(&self) -> Encoding {
+        match self.headers.get("transfer-encoding") {
+            Some(encoding) => encoding.parse().unwrap_or(Encoding::Identity),
+            None => Encoding::Identity,
         }
     }
 
@@ -106,6 +113,23 @@ pub enum Method {
     Patch,
 }
 
+#[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
+pub enum Encoding {
+    Chunked,
+    Identity,
+}
+
+impl std::str::FromStr for Encoding {
+    type Err = ();
+    fn from_str(s: &str) -> std::result::Result<Self, ()> {
+        match s {
+            "identity" => Ok(Encoding::Identity),
+            "chunked" => Ok(Encoding::Chunked),
+            _ => Err(()),
+        }
+    }
+}
+
 impl std::str::FromStr for Method {
     type Err = ();
     fn from_str(s: &str) -> std::result::Result<Self, ()> {
@@ -122,4 +146,10 @@ impl std::str::FromStr for Method {
             _ => Err(()),
         }
     }
+}
+pub enum Event {
+    Message {
+        msg: [u8; crate::BUF_LEN],
+        size: usize,
+    },
 }
