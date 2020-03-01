@@ -86,13 +86,11 @@ async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
         select! {
             stream = incoming.next().fuse() => match stream {
                 Some(stream) => {
-                    println!("DEBUG did something happen yes?");
                     let stream = stream?;
                     println!("accepting from: {}", stream.peer_addr()?);
                     spawn_and_log_error(keep_alive_loop(stream, router.clone()));
                 },
                 None => {
-                    println!("DEBUG did something happen no?");
                     break;
                 }
             },
@@ -120,13 +118,17 @@ async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     mut stream: TcpStream,
     router: Arc<Router<Routes>>,
 ) -> Result<()> {
+    let mut buf = [0u8; BUF_LEN];
+    let mut next_read = 0;
     loop {
         select! {
-            keep_alive = request_loop(&mut stream, router.clone()).fuse() => {
-                if !keep_alive? {
+            next = request_loop(&mut stream, &mut buf, next_read, router.clone()).fuse() => {
+                let (keep_alive, next) = next?;
+                if !keep_alive {
                     println!("client did not request keep-alive, closing..");
                     break;
                 }
+                next_read = next;
             },
             _ = Delay::new(Duration::from_secs(KEEP_ALIVE_TIMEOUT)).fuse() => {
                 println!("keep-alive timeout expired, closing..");
@@ -136,19 +138,20 @@ async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     Ok(())
 }
 
-async fn request_loop<Routes: Send + Sync + Copy + Clone + 'static>(
+async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
     stream: &mut TcpStream,
+    buf: &'a mut [u8],
+    buf_next_read: usize,
     router: Arc<Router<Routes>>,
-) -> Result<bool> {
+) -> Result<(bool, usize)> {
     let writer = stream.clone();
     let mut reader = stream.clone();
-    let mut buf = [0u8; BUF_LEN];
 
-    let mut req = parse_loop(&mut reader, &mut buf).await?;
+    let (mut req, buf_body_read, buf_next_read) =
+        parse_loop(&mut reader, buf, buf_next_read).await?;
 
     let content_length = req.content_length as usize;
     let transfer_encoding = req.transfer_endcoding();
-    let body_read = req.bytes.len() as usize;
     let (body_sender, body_receiver) = mpsc::channel(1);
     if req.content_length > 0 {
         req.set_body(body_receiver)
@@ -157,31 +160,52 @@ async fn request_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     let request_handle = task::spawn(handle_request(req, writer, router));
     let body_handle = body_loop(
         &mut reader,
-        body_read,
+        buf,
+        buf_body_read,
         content_length,
         transfer_encoding,
         body_sender,
     );
     let (_, keep_alive) = join!(body_handle, request_handle);
 
-    Ok(keep_alive?)
+    if buf_next_read > 0 {
+        buf.rotate_left(buf_body_read);
+    }
+
+    Ok((keep_alive?, buf_next_read))
 }
 
-async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<Request> {
+async fn parse_loop<'a>(
+    reader: &'a mut TcpStream,
+    buf: &'a mut [u8],
+    mut bytes_read: usize,
+) -> Result<(Request, usize, usize)> {
     let mut total_bytes_read = 0;
-    loop {
-        let bytes_read = reader.read(buf).await?;
+    let mut head = vec![];
+    let (req, buf_header_read, buf_body_read, buf_next_read) = loop {
         if bytes_read == 0 {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::ConnectionReset,
-                "client disconnected",
-            )));
+            bytes_read = reader.read(buf).await?;
+            if bytes_read == 0 {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "client disconnected",
+                )));
+            }
         }
+        total_bytes_read += bytes_read;
+
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parser = httparse::Request::new(&mut headers);
-        let parse_res = parser.parse(&buf)?;
-        total_bytes_read += bytes_read;
-        if parse_res.is_complete() {
+
+        let parse_res = if head.len() == 0 {
+            parser.parse(&buf[..bytes_read])?
+        } else {
+            head.extend_from_slice(&buf[..bytes_read]);
+            parser.parse(&head)?
+        };
+        if parse_res.is_partial() && head.len() == 0 {
+            head.extend_from_slice(&buf[..bytes_read]);
+        } else {
             let header_len = parse_res.unwrap();
             let headers: HashMap<String, String> = parser
                 .headers
@@ -193,36 +217,34 @@ async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<
                     )
                 })
                 .collect();
-            let content_length: usize = match headers.get("content-length") {
+            let content_len: usize = match headers.get("content-length") {
                 Some(cl) => cl.parse()?,
                 None => 0,
             };
 
-            let header_end_index: usize = header_len - (total_bytes_read - bytes_read) - 1;
-            let body_end_index: usize = cmp::min(header_end_index + content_length, bytes_read - 1);
-            println!(
-                "debug_header_end_index {}, debug_body_end_index {}",
-                header_end_index, body_end_index
-            );
-            let mut bytes = vec![];
-            bytes.extend_from_slice(&buf[(header_end_index + 1)..=body_end_index]);
-            return Ok(Request::from_parts(
-                parser,
-                bytes,
-                content_length as u64,
-                headers,
-            )?);
+            let buf_header_read: usize = header_len - (total_bytes_read - bytes_read);
+            let buf_body_read: usize = cmp::min(content_len, bytes_read - buf_header_read);
+            let buf_next_read = bytes_read - buf_header_read - buf_body_read;
+            let req = Request::from_parts(parser, content_len as u64, headers)?;
+            break (req, buf_header_read, buf_body_read, buf_next_read);
         }
+        bytes_read = 0;
+    };
+    if buf_body_read > 0 {
+        buf.rotate_left(buf_header_read);
     }
+    Ok((req, buf_body_read, buf_next_read))
 }
 
 async fn body_loop<'a>(
     stream: &mut TcpStream,
+    buf: &'a mut [u8],
     mut body_read: usize,
     content_length: usize,
     transfer_encoding: Encoding,
     mut tx: Sender<Event>,
 ) -> Result<()> {
+    let mut total_body_read = 0;
     if transfer_encoding == Encoding::Chunked {
         let mut total_bytes_read = 0;
         let mut body_buf = [0u8; BUF_LEN];
@@ -257,7 +279,6 @@ async fn body_loop<'a>(
                 } else {
                     let mut body = stream.take((content_length - body_read) as u64);
                     while total_bytes_read < index + chunk_size as usize {
-                        let mut body_buf = [0u8; BUF_LEN];
                         select! {
                             res = body.read(&mut body_buf).fuse() => match res {
                                 Ok(bytes_read) => {
@@ -283,31 +304,39 @@ async fn body_loop<'a>(
         }
     } else {
         let mut body = stream.take((content_length - body_read) as u64);
-        while body_read < content_length {
-            let mut body_buf = [0u8; BUF_LEN];
-            select! {
-                res = body.read(&mut body_buf).fuse() => match res {
-                    Ok(bytes_read) => {
-                        if bytes_read == 0 {
-                            // disconnected
-                            break;
-                        }
-                        body_read += bytes_read;
-                        if let Err(err) = tx
-                            .send(Event::Message { msg: body_buf, size: bytes_read })
-                            .await {
+        while total_body_read < content_length {
+            if body_read == 0 {
+                // nothing in the existing buffer
+                body_read = select! {
+                    res = body.read(buf).fuse() => match res {
+                        Ok(bytes_read) => {
+                            if bytes_read == 0 {
+                                // disconnected
                                 break;
                             }
+                            body_read += bytes_read;
+                            bytes_read
+                        },
+                        Err(err) => {
+                            break;
+                        }
                     },
-                    Err(err) => {
-                        break;
-                    }
-                },
+                };
             }
+            let mut body_buf = [0u8; BUF_LEN];
+            body_buf.copy_from_slice(&buf);
+            let msg = Event::Message {
+                msg: body_buf,
+                size: body_read,
+            };
+            if let Err(_) = tx.send(msg).await {
+                break;
+            }
+            total_body_read += body_read;
+            body_read = 0;
         }
         drop(tx);
-        if body_read < content_length {
-            println!("skipping remaining bytes???");
+        if total_body_read < content_length {
             futures::io::copy(body, &mut futures::io::sink()).await?;
         }
     }

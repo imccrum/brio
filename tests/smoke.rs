@@ -83,6 +83,80 @@ fn discards_unread_body() -> std::result::Result<(), Box<dyn std::error::Error +
     Ok(())
 }
 
+#[test]
+fn pipelinined() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /bar HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: 18\r\n\
+            \r\n\
+            {\"hello\": \"world\"}\r\n\
+            POST /foo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: 18\r\n\
+            \r\n\
+            {\"hello\": \"world\"}\r\n\
+        ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"foo": "bar"}));
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"hello": "world"}));
+
+    Ok(())
+}
+
+#[test]
+fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /bar HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: 18\r\n\
+            \r\n\
+            {\"hello\": \"world\"}\r\n\
+            POST /foo HTTP/1.1\r\n\
+            Host: localh",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"foo": "bar"}));
+
+    req.write_all(
+        b"\
+            ost:8000\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: 18\r\n\
+            \r\n\
+            {\"hello\": \"world\"}\r\n\
+        ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"hello": "world"}));
+
+    Ok(())
+}
+
 // #[test]
 // fn chunked() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //     let port: u32 = run_app();

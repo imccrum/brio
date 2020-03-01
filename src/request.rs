@@ -19,12 +19,11 @@ pub struct Request {
 impl Request {
     pub fn from_parts(
         parsed: httparse::Request,
-        bytes: Vec<u8>,
         content_length: u64,
         headers: HashMap<String, String>,
     ) -> Result<Request> {
         Ok(Request {
-            bytes: bytes,
+            bytes: vec![],
             version: parsed.version.unwrap(),
             path: parsed.path.unwrap().to_owned(),
             method: parsed.method.unwrap().to_lowercase().parse().unwrap(),
