@@ -168,7 +168,6 @@ async fn request_loop<Routes: Send + Sync + Copy + Clone + 'static>(
 }
 
 async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<Request> {
-    //
     let mut total_bytes_read = 0;
     loop {
         let bytes_read = reader.read(buf).await?;
