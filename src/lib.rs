@@ -168,6 +168,7 @@ async fn request_loop<Routes: Send + Sync + Copy + Clone + 'static>(
 }
 
 async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<Request> {
+    //
     let mut total_bytes_read = 0;
     loop {
         let bytes_read = reader.read(buf).await?;
@@ -180,9 +181,8 @@ async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parser = httparse::Request::new(&mut headers);
         let parse_res = parser.parse(&buf)?;
-        if parse_res.is_partial() {
-            total_bytes_read += bytes_read;
-        } else {
+        total_bytes_read += bytes_read;
+        if parse_res.is_complete() {
             let header_len = parse_res.unwrap();
             let headers: HashMap<String, String> = parser
                 .headers
@@ -198,10 +198,15 @@ async fn parse_loop<'a>(reader: &'a mut TcpStream, buf: &'a mut [u8]) -> Result<
                 Some(cl) => cl.parse()?,
                 None => 0,
             };
-            let header_end: usize = header_len - total_bytes_read;
-            let body_end: usize = header_end + content_length;
+
+            let header_end_index: usize = header_len - (total_bytes_read - bytes_read) - 1;
+            let body_end_index: usize = cmp::min(header_end_index + content_length, bytes_read - 1);
+            println!(
+                "debug_header_end_index {}, debug_body_end_index {}",
+                header_end_index, body_end_index
+            );
             let mut bytes = vec![];
-            bytes.extend_from_slice(&buf[header_end..cmp::min(body_end, BUF_LEN)]);
+            bytes.extend_from_slice(&buf[(header_end_index + 1)..=body_end_index]);
             return Ok(Request::from_parts(
                 parser,
                 bytes,
