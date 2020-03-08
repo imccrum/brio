@@ -152,7 +152,7 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
     let content_len = req.content_len as usize;
     let transfer_encoding = req.transfer_endcoding();
     let (body_tx, body_rx) = mpsc::channel(1);
-    if req.content_len > 0 {
+    if transfer_encoding == Encoding::Chunked || req.content_len > 0 {
         req.set_body(body_rx)
     }
 
@@ -166,12 +166,8 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
         transfer_encoding,
         body_tx,
     );
-    let (body_read, keep_alive) = join!(body_handle, request_handle);
-    let (buf_body_read, buf_next_read) = body_read?;
-    if buf_next_read > 0 {
-        buf.rotate_left(buf_body_read);
-    }
-    Ok((keep_alive?, buf_next_read))
+    let (buf_next_read, keep_alive) = join!(body_handle, request_handle);
+    Ok((keep_alive?, buf_next_read?))
 }
 
 async fn parse_head<'a>(
@@ -239,43 +235,81 @@ async fn body_loop<'a>(
     content_len: usize,
     transfer_encoding: Encoding,
     mut body_tx: Sender<Event>,
-) -> Result<(usize, usize)> {
+) -> Result<usize> {
     let mut total_body_read = 0;
     if transfer_encoding == Encoding::Chunked {
-        let mut total_bytes_read = 0;
-        let mut body_buf = [0u8; BUF_LEN];
-        let mut unread = 0;
+        let mut buf_read = buf_read - buf_head_read;
+        let mut buf_next_chunk_read = 0;
         loop {
-            let bytes_read = reader.read(&mut body_buf[unread..]).await?;
-            if bytes_read == 0 {
-                break;
-            }
-            total_bytes_read += bytes_read;
-            let parse_res = match httparse::parse_chunk_size(&body_buf) {
-                Ok(parse_res) => parse_res,
-                Err(_) => break,
-            };
-            if parse_res.is_complete() {
-                let (index, chunk_size) = parse_res.unwrap();
-                if total_bytes_read > index + chunk_size as usize {
-                    body_buf.rotate_right(index);
-                    if let Err(_) = body_tx
-                        .send(Event::Message {
-                            msg: body_buf,
-                            size: chunk_size as usize,
-                        })
-                        .await
-                    {
-                        break;
-                    }
-                    unread = cmp::max(0, total_bytes_read - index - chunk_size as usize);
-                    if unread > 0 {
-                        body_buf.rotate_left(index);
-                    }
+            if buf_read == 0 {
+                buf_read = reader.read(buf).await?;
+                if buf_read == 0 {
+                    break;
                 }
             }
+
+            let parse_res = match httparse::parse_chunk_size(&buf) {
+                Ok(parse_res) => parse_res,
+                Err(err) => {
+                    println!("chunk err {}", err);
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "invalid chunk",
+                    )));
+                }
+            };
+            if parse_res.is_complete() {
+                let (index, chunk_len) = parse_res.unwrap();
+                let mut index_len = index;
+                let chunk_len = chunk_len as usize;
+                if chunk_len == 0 {
+                    // end of body
+                    buf_next_chunk_read = buf_read - (index + 2);
+                    buf.rotate_left(index + 2);
+                    break;
+                }
+                let mut buf_chunk_read: usize = cmp::min(chunk_len, buf_read);
+                buf.rotate_left(index);
+                let mut total_chunk_read = 0;
+                loop {
+                    if buf_chunk_read == 0 {
+                        // if no unparsed bytes in the current buffer read from the socket
+                        buf_read = select! {
+                            res = reader.read(buf).fuse() => match res {
+                                Ok(buf_read) => {
+                                    if buf_read == 0 {
+                                        break;
+                                    }
+                                    buf_read
+                                },
+                                Err(err) => {
+                                    break;
+                                }
+                            },
+                        };
+                        buf_chunk_read = cmp::min(chunk_len, buf_read);
+                    }
+                    let mut tx_buf = [0u8; BUF_LEN];
+                    tx_buf.copy_from_slice(&buf);
+                    let msg = Event::Message {
+                        msg: tx_buf,
+                        size: buf_chunk_read,
+                    };
+                    if let Err(_) = body_tx.send(msg).await {
+                        break;
+                    }
+                    buf_read -= buf_chunk_read + index_len + 2;
+                    total_chunk_read += buf_chunk_read;
+                    if total_chunk_read == chunk_len {
+                        // entire body has been read
+                        break;
+                    }
+                    index_len = 0;
+                }
+                buf.rotate_left(buf_chunk_read + 2);
+            }
         }
-        Ok((0, 0))
+        Ok(buf_next_chunk_read)
     } else {
         // identity encoding
         // check how much of the body was read when reading parsing the request head
@@ -323,7 +357,10 @@ async fn body_loop<'a>(
             // if there are remaining unread
             futures::io::copy(body, &mut futures::io::sink()).await?;
         }
-        Ok((buf_body_read, buf_next_read))
+        if buf_next_read > 0 {
+            buf.rotate_left(buf_body_read);
+        }
+        Ok(buf_next_read)
     }
 }
 

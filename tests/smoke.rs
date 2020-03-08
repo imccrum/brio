@@ -20,18 +20,6 @@ use std::{
 
 type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
-async fn handler(mut req: Request) -> Response {
-    let json = match req.json().await {
-        Ok(json) => json,
-        Err(_err) => {
-            return Response::status(Status::BadRequest);
-        }
-    };
-    let mut res = Response::status(Status::Ok);
-    res.json(json);
-    res
-}
-
 fn logger(ctx: Context) -> BoxFuture<Response> {
     println!("request recived: {}", ctx.req.path);
     ctx.next()
@@ -157,37 +145,35 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
     Ok(())
 }
 
-// #[test]
-// fn chunked() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-//     let port: u32 = run_app();
-//     let uri = format!("127.0.0.1:{}", port);
-//     let body = json!({"hello": "world"});
-//     let mut req = connect(&uri)?;
-//     req.write_all(req.write_all(
-//         b"\
-//             POST /foo HTTP/1.1\r\n\
-//             Host: localhost:8000\r\n\
-//             Transfer-Encoding: chunked\r\n\
-//             \r\n\
-//             1\r\n\
-//             {\r\n\
-//             5\r\n\
-//             hello\r\n\
-//             1\r\n\
-//             :\r\n\
-//             7\r\n\
-//              world}\r\n\
-//             0\r\n\
-//             \r\n\
-//         ",
-//     ))
-//     .unwrap();
+#[test]
+fn chunked() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /foo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            \r\n\
+        ",
+    )
+    .unwrap();
 
-//     let res = call(&mut req)?;
-//     let json = serde_json::from_slice::<Value>(&res.bytes)?;
-//     assert_eq!(body, json);
-//     Ok(())
-// }
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"hello": "world"}));
+    Ok(())
+}
 
 fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     pub const BUF_LEN: usize = 256;
@@ -237,6 +223,19 @@ fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Erro
             )?);
         }
     }
+}
+
+async fn handler(mut req: Request) -> Response {
+    let json = match req.json().await {
+        Ok(json) => json,
+        Err(_err) => {
+            println!("err {}", _err);
+            return Response::status(Status::BadRequest);
+        }
+    };
+    let mut res = Response::status(Status::Ok);
+    res.json(json);
+    res
 }
 
 fn run_app() -> u32 {

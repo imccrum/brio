@@ -80,16 +80,34 @@ impl Request {
         match take {
             Some(take) => {
                 let mut stream = take.fuse();
-                while self.bytes.len() < self.content_len as usize {
-                    let chunk = select! {
-                        chunk = stream.next().fuse() => match chunk {
-                            None => break,
-                            Some(chunk) => chunk,
-                        },
-                    };
-                    match chunk {
-                        Event::Message { msg, size } => {
-                            self.bytes.extend_from_slice(&msg[..size]);
+                if self.transfer_endcoding() == Encoding::Chunked {
+                    loop {
+                        let chunk = select! {
+                            chunk = stream.next().fuse() => match chunk {
+                                None => {
+                                    break;
+                                },
+                                Some(chunk) => chunk,
+                            },
+                        };
+                        match chunk {
+                            Event::Message { msg, size } => {
+                                self.bytes.extend_from_slice(&msg[..size]);
+                            }
+                        }
+                    }
+                } else {
+                    while self.bytes.len() < self.content_len as usize {
+                        let chunk = select! {
+                            chunk = stream.next().fuse() => match chunk {
+                                None => break,
+                                Some(chunk) => chunk,
+                            },
+                        };
+                        match chunk {
+                            Event::Message { msg, size } => {
+                                self.bytes.extend_from_slice(&msg[..size]);
+                            }
                         }
                     }
                 }
