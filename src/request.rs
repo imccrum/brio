@@ -12,14 +12,14 @@ pub struct Request {
     pub method: Method,
     pub path: String,
     pub headers: HashMap<String, String>,
-    pub content_length: u64,
-    pub body: Arc<Mutex<Option<Receiver<Event>>>>,
+    pub content_len: u64,
+    pub body_rx: Arc<Mutex<Option<Receiver<Event>>>>,
 }
 
 impl Request {
     pub fn from_parts(
         parsed: httparse::Request,
-        content_length: u64,
+        content_len: u64,
         headers: HashMap<String, String>,
     ) -> Result<Request> {
         Ok(Request {
@@ -28,13 +28,13 @@ impl Request {
             path: parsed.path.unwrap().to_owned(),
             method: parsed.method.unwrap().to_lowercase().parse().unwrap(),
             headers: headers,
-            content_length: content_length,
-            body: Arc::new(Mutex::new(None)),
+            content_len: content_len,
+            body_rx: Arc::new(Mutex::new(None)),
         })
     }
 
     pub fn set_body(&mut self, receiver: Receiver<Event>) {
-        self.body = Arc::new(Mutex::new(Some(receiver)))
+        self.body_rx = Arc::new(Mutex::new(Some(receiver)))
     }
 
     pub fn is_keep_alive(&self) -> bool {
@@ -68,7 +68,7 @@ impl Request {
 
     async fn body(&mut self) -> Result<()> {
         let take = self
-            .body
+            .body_rx
             .clone()
             .lock()
             .or(Err(Box::new(std::io::Error::new(
@@ -80,7 +80,7 @@ impl Request {
         match take {
             Some(take) => {
                 let mut stream = take.fuse();
-                while self.bytes.len() < self.content_length as usize {
+                while self.bytes.len() < self.content_len as usize {
                     let chunk = select! {
                         chunk = stream.next().fuse() => match chunk {
                             None => break,
