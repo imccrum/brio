@@ -1,12 +1,16 @@
 #![feature(async_closure)]
+#[cfg(test)]
 //cargo test keeps_buffer -- --nocapture --test-threads=1
-
 use brio::{App, Context, Request, Response, Status};
 use futures::Future;
 use httparse;
 use rand::{thread_rng, Rng};
 use serde_json::{json, Value};
 use std::panic;
+
+mod util;
+
+use util::*;
 
 use std::{
     cmp,
@@ -146,7 +150,7 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
 }
 
 #[test]
-fn chunked() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn chunked_small() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port: u32 = run_app();
     let uri = format!("127.0.0.1:{}", port);
     let mut req = connect(&uri)?;
@@ -172,6 +176,234 @@ fn chunked() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>
     let res = call(&mut req)?;
     let json = serde_json::from_slice::<Value>(&res.bytes)?;
     assert_eq!(json, json!({"hello": "world"}));
+    Ok(())
+}
+
+#[test]
+fn chunked_small_keep_alive() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /foo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            \r\n\
+            POST /foo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            \r\n\
+        ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"hello": "world"}));
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"hello": "world"}));
+    Ok(())
+}
+
+#[test]
+fn chunked_small_discards_unread(
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /baz HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            \r\n\
+            POST /foo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            \r\n\
+        ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    assert_eq!(res.status, Status::Ok);
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, json!({"hello": "world"}));
+    Ok(())
+}
+
+#[test]
+fn chunked_large() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+        POST /foo HTTP/1.1\r\n\
+        Host: localhost:8000\r\n\
+        Transfer-Encoding: chunked\r\n\
+        \r\n\
+        1\r\n\
+        [\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        2\r\n ,\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        1\r\n\
+        ]\r\n\
+        0\r\n\
+        \r\n\
+        ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
+    Ok(())
+}
+
+#[test]
+fn chunked_large_keep_alive() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+        POST /foo HTTP/1.1\r\n\
+        Host: localhost:8000\r\n\
+        Transfer-Encoding: chunked\r\n\
+        \r\n\
+        1\r\n\
+        [\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        2\r\n ,\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        1\r\n\
+        ]\r\n\
+        0\r\n\
+        \r\n\
+        POST /foo HTTP/1.1\r\n\
+        Host: localhost:8000\r\n\
+        Transfer-Encoding: chunked\r\n\
+        \r\n\
+        1\r\n\
+        [\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        2\r\n ,\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        1\r\n\
+        ]\r\n\
+        0\r\n\
+        \r\n\
+        ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
+    Ok(())
+}
+
+#[test]
+fn chunked_large_discards_unread(
+) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+        POST /baz HTTP/1.1\r\n\
+        Host: localhost:8000\r\n\
+        Transfer-Encoding: chunked\r\n\
+        \r\n\
+        1\r\n\
+        [\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        2\r\n ,\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        1\r\n\
+        ]\r\n\
+        0\r\n\
+        \r\n\
+        POST /foo HTTP/1.1\r\n\
+        Host: localhost:8000\r\n\
+        Transfer-Encoding: chunked\r\n\
+        \r\n\
+        1\r\n\
+        [\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        2\r\n ,\r\n\
+        28d\r\n\
+        {\"text\":\"Two households, both alike in dignity,\\nIn fair Verona, where we lay our scene,\\nFrom ancient grudge break to new mutiny,\\nWhere civil blood makes civil hands unclean.\\nFrom forth the fatal loins of these two foes\\nA pair of star-cross\'d lovers take their life;\\nWhose misadventured piteous overthrows\\nDo with their death bury their parents\' strife.\\nThe fearful passage of their death-mark\'d love,\\nAnd the continuance of their parents\' rage,\\nWhich, but their children\'s end, nought could remove,\\nIs now the two hours\' traffic of our stage;\\nThe which if you with patient ears attend,\\nWhat here shall miss, our toil shall strive to mend.\"}\r\n\
+        1\r\n\
+        ]\r\n\
+        0\r\n\
+        \r\n\
+        ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    assert_eq!(res.status, Status::Ok);
+
+    let res = call(&mut req)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
     Ok(())
 }
 
@@ -249,6 +481,7 @@ fn run_app() -> u32 {
             res.json(json!({"foo": "bar"}));
             res
         });
+        app.post("/baz", async move |_req| Response::status(Status::Ok));
         app.middleware(logger);
         app.run(port)
     });

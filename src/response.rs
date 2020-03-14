@@ -66,7 +66,7 @@ impl Response {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Status {
     Continue,
     SwitchingProtocol,

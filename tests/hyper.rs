@@ -1,6 +1,6 @@
 #![feature(async_closure)]
+#[cfg(test)]
 //cargo test keeps_buffer -- --nocapture --test-threads=1
-
 use brio::{App, Context, Request, Response, Status};
 use futures::Future;
 use hyper::{Client, Uri};
@@ -9,6 +9,10 @@ use serde_json::{json, Value};
 use std::panic;
 
 use std::{pin::Pin, thread};
+
+mod util;
+
+use util::*;
 
 type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
@@ -118,10 +122,9 @@ async fn skip_body() -> Result<(), Box<dyn std::error::Error>> {
         app.run(port)
     });
 
-    let body = large_body();
-    let arr = vec![body.clone(), body.clone()];
-
     let client = Client::new();
+
+    let arr = Value::Array(vec![large_body(), large_body()]);
 
     let uri: Uri = format!("http://127.0.0.1:{}/bar", port).parse()?;
     let req = hyper::Request::builder()
@@ -131,6 +134,8 @@ async fn skip_body() -> Result<(), Box<dyn std::error::Error>> {
         .body(hyper::Body::from(serde_json::to_vec(&arr)?))?;
     let resp = client.request(req).await?;
     assert_eq!(resp.status(), 200);
+
+    let body = large_body();
 
     let uri: Uri = format!("http://127.0.0.1:{}/foo", port).parse()?;
     let req = hyper::Request::builder()
@@ -145,24 +150,4 @@ async fn skip_body() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(body, json);
 
     Ok(())
-}
-
-fn large_body() -> Value {
-    json!({
-        "text":
-        "Two households, both alike in dignity,
-  In fair Verona, where we lay our scene,
-  From ancient grudge break to new mutiny,
-  Where civil blood makes civil hands unclean.
-  From forth the fatal loins of these two foes
-  A pair of star-cross'd lovers take their life;
-  Whose misadventured piteous overthrows
-  Do with their death bury their parents' strife.
-  The fearful passage of their death-mark'd love,
-  And the continuance of their parents' rage,
-  Which, but their children's end, nought could remove,
-  Is now the two hours' traffic of our stage;
-  The which if you with patient ears attend,
-  What here shall miss, our toil shall strive to mend.",
-    })
 }

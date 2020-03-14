@@ -175,19 +175,13 @@ async fn parse_head<'a>(
     buf: &'a mut [u8],
     mut buf_read: usize,
 ) -> Result<(Request, usize, usize)> {
-    let mut total_read = 0;
+    let mut total_head_read = 0;
     let mut head = vec![];
     let (req, buf_head_read, buf_read) = loop {
         if buf_read == 0 {
-            buf_read = reader.read(buf).await?;
-            if buf_read == 0 {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionReset,
-                    "client disconnected",
-                )));
-            }
+            buf_read = not_zero(reader.read(buf).await?)?;
         }
-        total_read += buf_read;
+        total_head_read += buf_read;
 
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parser = httparse::Request::new(&mut headers);
@@ -217,7 +211,7 @@ async fn parse_head<'a>(
                 None => 0,
             };
 
-            let buf_head_read: usize = header_len - (total_read - buf_read);
+            let buf_head_read: usize = header_len - (total_head_read - buf_read);
             let req = Request::from_parts(parser, content_len as u64, headers)?;
             break (req, buf_head_read, buf_read);
         }
@@ -239,19 +233,14 @@ async fn body_loop<'a>(
     let mut total_body_read = 0;
     if transfer_encoding == Encoding::Chunked {
         let mut buf_read = buf_read - buf_head_read;
-        let mut buf_next_chunk_read = 0;
+        let buf_next_chunk_read;
         loop {
             if buf_read == 0 {
-                buf_read = reader.read(buf).await?;
-                if buf_read == 0 {
-                    break;
-                }
+                buf_read = not_zero(reader.read(buf).await?)?;
             }
-
-            let parse_res = match httparse::parse_chunk_size(&buf) {
+            let parse_res = match httparse::parse_chunk_size(&buf[..buf_read]) {
                 Ok(parse_res) => parse_res,
-                Err(err) => {
-                    println!("chunk err {}", err);
+                Err(_) => {
                     return Err(Box::new(std::io::Error::new(
                         std::io::ErrorKind::ConnectionReset,
                         "invalid chunk",
@@ -259,54 +248,40 @@ async fn body_loop<'a>(
                 }
             };
             if parse_res.is_complete() {
-                let (index, chunk_len) = parse_res.unwrap();
-                let mut index_len = index;
+                let (mut index, chunk_len) = parse_res.unwrap();
                 let chunk_len = chunk_len as usize;
                 if chunk_len == 0 {
                     // end of body
-                    buf_next_chunk_read = buf_read - (index + 2);
+                    buf_next_chunk_read = buf_read - index - 2;
                     buf.rotate_left(index + 2);
                     break;
                 }
-                let mut buf_chunk_read: usize = cmp::min(chunk_len, buf_read);
                 buf.rotate_left(index);
+                let mut buf_chunk_read: usize = cmp::min(chunk_len, buf_read - index);
                 let mut total_chunk_read = 0;
                 loop {
                     if buf_chunk_read == 0 {
                         // if no unparsed bytes in the current buffer read from the socket
                         buf_read = select! {
-                            res = reader.read(buf).fuse() => match res {
-                                Ok(buf_read) => {
-                                    if buf_read == 0 {
-                                        break;
-                                    }
-                                    buf_read
-                                },
-                                Err(err) => {
-                                    break;
-                                }
-                            },
+                            res = reader.read(buf).fuse() => not_zero(res?)?
                         };
-                        buf_chunk_read = cmp::min(chunk_len, buf_read);
+                        buf_chunk_read = cmp::min(chunk_len - total_chunk_read, buf_read);
                     }
-                    let mut tx_buf = [0u8; BUF_LEN];
-                    tx_buf.copy_from_slice(&buf);
-                    let msg = Event::Message {
-                        msg: tx_buf,
-                        size: buf_chunk_read,
-                    };
-                    if let Err(_) = body_tx.send(msg).await {
-                        break;
+                    if let Err(_) = send_body_chunk(buf, &mut body_tx, buf_chunk_read).await {
+                        println!("discarding unread bytes");
+                        // do nothing
                     }
-                    buf_read -= buf_chunk_read + index_len + 2;
                     total_chunk_read += buf_chunk_read;
+                    buf_read -= buf_chunk_read + index;
                     if total_chunk_read == chunk_len {
                         // entire body has been read
+                        buf_read -= 2;
+                        buf.rotate_left(buf_chunk_read + 2);
                         break;
                     }
-                    index_len = 0;
+                    index = 0;
+                    buf_chunk_read = 0;
                 }
-                buf.rotate_left(buf_chunk_read + 2);
             }
         }
         Ok(buf_next_chunk_read)
@@ -322,26 +297,10 @@ async fn body_loop<'a>(
             if buf_body_read == 0 {
                 // if no unparsed bytes in the current buffer read from the socket
                 buf_body_read = select! {
-                    res = body.read(buf).fuse() => match res {
-                        Ok(buf_read) => {
-                            if buf_read == 0 {
-                                break;
-                            }
-                            buf_read
-                        },
-                        Err(err) => {
-                            break;
-                        }
-                    },
+                    res = body.read(buf).fuse() => not_zero(res?)?
                 };
             }
-            let mut tx_buf = [0u8; BUF_LEN];
-            tx_buf.copy_from_slice(&buf);
-            let msg = Event::Message {
-                msg: tx_buf,
-                size: buf_body_read,
-            };
-            if let Err(_) = body_tx.send(msg).await {
+            if let Err(_) = send_body_chunk(buf, &mut body_tx, buf_body_read).await {
                 break;
             }
             total_body_read += buf_body_read;
@@ -390,6 +349,31 @@ async fn handle_request<Routes: Send + Sync + Copy + Clone + 'static>(
     }
     writer.write_all(res.to_bytes().as_slice()).await.unwrap();
     Ok(keep_alive)
+}
+
+async fn send_body_chunk<'a>(
+    buf: &'a [u8],
+    body_tx: &mut Sender<Event>,
+    buf_body_read: usize,
+) -> Result<()> {
+    let mut tx_buf = [0u8; BUF_LEN];
+    tx_buf.copy_from_slice(&buf);
+    let msg = Event::Message {
+        msg: tx_buf,
+        size: buf_body_read,
+    };
+    Ok(body_tx.send(msg).await?)
+}
+
+fn not_zero(bytes_read: usize) -> Result<usize> {
+    if bytes_read == 0 {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "disconnected",
+        )));
+    } else {
+        Ok(bytes_read)
+    }
 }
 
 fn register_sigterm_listener() -> Result<futures::channel::oneshot::Receiver<bool>> {

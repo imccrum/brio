@@ -4,7 +4,6 @@ use brio::Context;
 use brio::Request;
 use brio::Response;
 use brio::Status;
-use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -30,8 +29,7 @@ fn logger(ctx: Context) -> BoxFuture<Response> {
 }
 
 async fn foo(_req: Request) -> Response {
-    let mut res = Response::status(Status::Ok);
-    //res.json(json!({"hello": "world"}));
+    let res = Response::status(Status::Ok);
     res
 }
 

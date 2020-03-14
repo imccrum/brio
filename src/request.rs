@@ -57,6 +57,9 @@ impl Request {
 
     pub async fn json(&mut self) -> Result<serde_json::Value> {
         self.body().await?;
+        if let Some(cl) = self.headers.get("content-length") {
+            println!("content-length: {}", cl);
+        }
         println!("utf8 {:?}", std::str::from_utf8(&self.bytes));
         Ok(serde_json::from_slice(&self.bytes.as_slice())?)
     }
