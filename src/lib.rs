@@ -7,10 +7,7 @@ use async_std::{
 };
 use futures::{channel::mpsc, join, select, sink::SinkExt, FutureExt};
 use futures_timer::Delay;
-use std::{
-    cmp, collections::hash_map::HashMap, future::Future, pin::Pin, str, sync::Arc, thread,
-    time::Duration,
-};
+use std::{cmp, future::Future, pin::Pin, str, sync::Arc, thread, time::Duration};
 
 mod request;
 mod response;
@@ -196,23 +193,8 @@ async fn parse_head<'a>(
             head.extend_from_slice(&buf[..buf_read]);
         } else {
             let header_len = parse_res.unwrap();
-            let headers: HashMap<String, String> = parser
-                .headers
-                .iter()
-                .map(|&x| {
-                    (
-                        x.name.to_owned().to_lowercase(),
-                        str::from_utf8(x.value).unwrap().to_owned(),
-                    )
-                })
-                .collect();
-            let content_len: usize = match headers.get("content-length") {
-                Some(cl) => cl.parse()?,
-                None => 0,
-            };
-
             let buf_head_read: usize = header_len - (total_head_read - buf_read);
-            let req = Request::from_parts(parser, content_len as u64, headers)?;
+            let req = Request::from_parser(parser)?;
             break (req, buf_head_read, buf_read);
         }
         buf_read = 0;

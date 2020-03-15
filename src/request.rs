@@ -17,18 +17,28 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn from_parts(
-        parsed: httparse::Request,
-        content_len: u64,
-        headers: HashMap<String, String>,
-    ) -> Result<Request> {
+    pub(crate) fn from_parser(parser: httparse::Request) -> Result<Request> {
+        let headers: HashMap<String, String> = parser
+            .headers
+            .iter()
+            .map(|&x| {
+                (
+                    x.name.to_owned().to_lowercase(),
+                    std::str::from_utf8(x.value).unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let content_len: usize = match headers.get("content-length") {
+            Some(cl) => cl.parse()?,
+            None => 0,
+        };
         Ok(Request {
             bytes: vec![],
-            version: parsed.version.unwrap(),
-            path: parsed.path.unwrap().to_owned(),
-            method: parsed.method.unwrap().to_lowercase().parse().unwrap(),
+            version: parser.version.unwrap(),
+            path: parser.path.unwrap().to_owned(),
+            method: parser.method.unwrap().to_lowercase().parse().unwrap(),
             headers: headers,
-            content_len: content_len,
+            content_len: content_len as u64,
             body_rx: Arc::new(Mutex::new(None)),
         })
     }
