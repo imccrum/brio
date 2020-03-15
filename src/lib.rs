@@ -22,7 +22,7 @@ pub use router::Context;
 use request::{Encoding, Method, Stream};
 use router::{Middleware, Path, Route, Router};
 
-pub const BUF_LEN: usize = 256;
+pub const BUF_LEN: usize = 10;
 pub const KEEP_ALIVE_TIMEOUT: u64 = 10;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -302,69 +302,100 @@ async fn parse_chunked<'a>(
     trailers: Vec<String>,
     mut body_tx: Sender<Stream>,
 ) -> Result<usize> {
+    let mut chunk_size = vec![];
     loop {
-        // TODO this is broken when BUF_LEN is 10
-        if buf_read_len == 0 {
-            buf_read_len = not_zero(reader.read(buf).await?)?;
-        }
-        let parse_res = match httparse::parse_chunk_size(&buf[..buf_read_len]) {
-            Ok(parse_res) => parse_res,
-            Err(_) => {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionReset,
-                    "invalid chunk",
-                )));
+        let mut chunk_size_buf_len = buf_read_len;
+        let (index, chunk_len) = loop {
+            if buf_read_len == 0 {
+                buf_read_len = not_zero(reader.read(buf).await?)?;
+                chunk_size_buf_len += buf_read_len;
             }
+            let parse_res = if chunk_size.len() == 0 {
+                httparse::parse_chunk_size(&buf[..buf_read_len])
+            } else {
+                chunk_size.extend_from_slice(&buf[..buf_read_len]);
+                httparse::parse_chunk_size(&chunk_size)
+            };
+            let parse_res = match parse_res {
+                Ok(parse_res) => parse_res,
+                Err(_) => {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "invalid chunk",
+                    )));
+                }
+            };
+            if parse_res.is_partial() {
+                if chunk_size.len() == 0 {
+                    chunk_size.extend_from_slice(&buf[..buf_read_len]);
+                }
+            } else {
+                break parse_res.unwrap();
+            }
+            buf_read_len = 0;
         };
-        if parse_res.is_complete() {
-            let (mut index, chunk_len) = parse_res.unwrap();
-            let chunk_len = chunk_len as usize;
-            if chunk_len == 0 {
-                // end of body
-                // check for trailers
-                if trailers.len() > 0 {
-                    rotate_buf(buf, index);
-                    let (trailers, trailer_buf_read_len) =
-                        parse_trailers(reader, buf, buf_read_len - index).await?;
-                    buf_read_len = trailer_buf_read_len;
-                    if let Err(_) = send_trailers(buf, &mut body_tx, trailers).await {
-                        println!("discarding unread trailers");
-                        // do nothing
-                    }
-                } else {
-                    buf_read_len = buf_read_len - index - 2;
-                    rotate_buf(buf, index + 2);
-                }
-                break;
-            }
-            rotate_buf(buf, index);
-            let mut buf_chunk_len: usize = cmp::min(chunk_len, buf_read_len - index);
-            let mut total_chunk_len = 0;
-            loop {
-                if buf_chunk_len == 0 {
-                    // if no unparsed bytes in the current buffer read from the socket
-                    buf_read_len = select! {
-                        res = reader.read(buf).fuse() => not_zero(res?)?
-                    };
-                    buf_chunk_len = cmp::min(chunk_len - total_chunk_len, buf_read_len);
-                }
-                if let Err(_) = send_body_chunk(buf, &mut body_tx, buf_chunk_len).await {
-                    println!("discarding unread bytes");
+
+        let chunk_len = chunk_len as usize;
+        let offset = cmp::min(index, index - (chunk_size_buf_len - buf_read_len));
+
+        buf_read_len -= offset;
+        rotate_buf(buf, offset);
+
+        if chunk_len == 0 {
+            // end of body
+            // check for trailers
+            if trailers.len() > 0 {
+                let (trailers, trailer_buf_read_len) =
+                    parse_trailers(reader, buf, buf_read_len).await?;
+                buf_read_len = trailer_buf_read_len;
+                if let Err(_) = send_trailers(buf, &mut body_tx, trailers).await {
+                    println!("discarding unread trailers");
                     // do nothing
                 }
-                total_chunk_len += buf_chunk_len;
-                buf_read_len -= buf_chunk_len + index;
-                if total_chunk_len == chunk_len {
-                    // entire body has been read
-                    buf_read_len -= 2;
-                    rotate_buf(buf, buf_chunk_len + 2);
-                    break;
+            } else {
+                if buf_read_len < 2 {
+                    buf_read_len += select! {
+                        res = reader.read(&mut buf[buf_read_len..]).fuse() => not_zero(res?)?
+                    };
                 }
-                index = 0;
-                buf_chunk_len = 0;
+                buf_read_len -= 2;
+                rotate_buf(buf, 2);
             }
+
+            break;
         }
+
+        let mut buf_chunk_len: usize = cmp::min(chunk_len, buf_read_len);
+        let mut total_chunk_len = 0;
+        loop {
+            // here we need to check that we actually have enough of the body
+            if buf_read_len < 2 {
+                // if no unparsed bytes in the current buffer read from the socket
+                buf_read_len += select! {
+                    res = reader.read(&mut buf[buf_read_len..]).fuse() => not_zero(res?)?
+                };
+                buf_chunk_len = cmp::min(chunk_len - total_chunk_len, buf_read_len);
+            }
+            if let Err(_) = send_body_chunk(buf, &mut body_tx, buf_chunk_len).await {
+                println!("discarding unread bytes");
+                // do nothing
+            }
+
+            total_chunk_len += buf_chunk_len;
+            buf_read_len -= buf_chunk_len;
+            rotate_buf(buf, buf_chunk_len);
+            if total_chunk_len == chunk_len && buf_read_len >= 2 {
+                buf_read_len -= 2;
+                rotate_buf(buf, 2);
+                // entire body has been read
+                break;
+            }
+            buf_chunk_len = 0;
+        }
+
+        chunk_size = vec![];
     }
+
     Ok(buf_read_len)
 }
 
