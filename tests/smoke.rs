@@ -407,6 +407,41 @@ fn chunked_large_discards_unread(
     Ok(())
 }
 
+#[test]
+fn trailers() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /trailers HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            Trailer: Expires\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            Expires: Fri, 01 Nov 2019 07:28:00 GMT\r\n\
+            \r\n\
+            ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    assert_eq!(res.status, Status::Ok);
+    assert_eq!(
+        res.headers.get("expires").unwrap(),
+        "Fri, 01 Nov 2019 07:28:00 GMT",
+    );
+    Ok(())
+}
+
 fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     pub const BUF_LEN: usize = 256;
     let mut total_bytes_read = 0;
@@ -482,6 +517,21 @@ fn run_app() -> u32 {
             res
         });
         app.post("/baz", async move |_req| Response::status(Status::Ok));
+        app.post("/trailers", async move |mut req: Request| {
+            let mut res = Response::status(Status::Ok);
+            match req.trailers().await {
+                Some(trailers) => {
+                    res.headers.insert(
+                        "expires".to_owned(),
+                        trailers.get("expires").unwrap().to_owned(),
+                    );
+                }
+                None => {
+                    return Response::status(Status::BadRequest);
+                }
+            }
+            res
+        });
         app.middleware(logger);
         app.run(port)
     });

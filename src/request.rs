@@ -12,8 +12,8 @@ pub struct Request {
     pub method: Method,
     pub path: String,
     pub headers: HashMap<String, String>,
-    pub content_len: u64,
-    pub body_rx: Arc<Mutex<Option<Receiver<Event>>>>,
+    pub trailers: Option<HashMap<String, String>>,
+    pub body_rx: Arc<Mutex<Option<Receiver<Stream>>>>,
 }
 
 impl Request {
@@ -28,22 +28,18 @@ impl Request {
                 )
             })
             .collect();
-        let content_len: usize = match headers.get("content-length") {
-            Some(cl) => cl.parse()?,
-            None => 0,
-        };
         Ok(Request {
             bytes: vec![],
             version: parser.version.unwrap(),
             path: parser.path.unwrap().to_owned(),
             method: parser.method.unwrap().to_lowercase().parse().unwrap(),
             headers: headers,
-            content_len: content_len as u64,
+            trailers: None,
             body_rx: Arc::new(Mutex::new(None)),
         })
     }
 
-    pub fn set_body(&mut self, receiver: Receiver<Event>) {
+    pub fn set_body(&mut self, receiver: Receiver<Stream>) {
         self.body_rx = Arc::new(Mutex::new(Some(receiver)))
     }
 
@@ -65,6 +61,12 @@ impl Request {
         Path::new(self.method, self.path.clone())
     }
 
+    pub fn content_len(&self) -> Option<usize> {
+        self.headers
+            .get("content-length")
+            .and_then(|cl: &String| cl.parse().ok())
+    }
+
     pub async fn json(&mut self) -> Result<serde_json::Value> {
         self.body().await?;
         if let Some(cl) = self.headers.get("content-length") {
@@ -72,6 +74,24 @@ impl Request {
         }
         println!("utf8 {:?}", std::str::from_utf8(&self.bytes));
         Ok(serde_json::from_slice(&self.bytes.as_slice())?)
+    }
+
+    pub fn check_trailers(&self) -> Vec<String> {
+        match self.headers.get("trailer") {
+            Some(trailers) => trailers
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+                .split(",")
+                .map(|s| s.to_owned())
+                .collect::<Vec<String>>(),
+            None => vec![],
+        }
+    }
+
+    pub async fn trailers(&mut self) -> &Option<HashMap<String, String>> {
+        self.body().await.ok();
+        &self.trailers
     }
 
     pub async fn bytes(&mut self) -> Result<&Vec<u8>> {
@@ -97,20 +117,23 @@ impl Request {
                     loop {
                         let chunk = select! {
                             chunk = stream.next().fuse() => match chunk {
-                                None => {
-                                    break;
-                                },
+                                None => break,
                                 Some(chunk) => chunk,
                             },
                         };
                         match chunk {
-                            Event::Message { msg, size } => {
-                                self.bytes.extend_from_slice(&msg[..size]);
+                            Stream::Body { buf, size } => {
+                                self.bytes.extend_from_slice(&buf[..size]);
+                            }
+                            Stream::Trailers { trailers } => {
+                                self.trailers = Some(trailers);
+                                break;
                             }
                         }
                     }
                 } else {
-                    while self.bytes.len() < self.content_len as usize {
+                    let cl = self.content_len().unwrap();
+                    while self.bytes.len() < cl as usize {
                         let chunk = select! {
                             chunk = stream.next().fuse() => match chunk {
                                 None => break,
@@ -118,8 +141,14 @@ impl Request {
                             },
                         };
                         match chunk {
-                            Event::Message { msg, size } => {
-                                self.bytes.extend_from_slice(&msg[..size]);
+                            Stream::Body { buf, size } => {
+                                self.bytes.extend_from_slice(&buf[..size]);
+                            }
+                            _ => {
+                                return Err(Box::new(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "trailers for identity",
+                                )));
                             }
                         }
                     }
@@ -130,6 +159,7 @@ impl Request {
         Ok(())
     }
 }
+
 #[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
 pub enum Method {
     Get,
@@ -177,9 +207,12 @@ impl std::str::FromStr for Method {
         }
     }
 }
-pub enum Event {
-    Message {
-        msg: [u8; crate::BUF_LEN],
+pub enum Stream {
+    Body {
+        buf: [u8; crate::BUF_LEN],
         size: usize,
+    },
+    Trailers {
+        trailers: HashMap<String, String>,
     },
 }
