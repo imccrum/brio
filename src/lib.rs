@@ -236,8 +236,10 @@ async fn parse_head<'a>(
             head.extend_from_slice(&buf[..buf_read_len]);
             parser.parse(&head)?
         };
-        if parse_res.is_partial() && head.len() == 0 {
-            head.extend_from_slice(&buf[..buf_read_len]);
+        if parse_res.is_partial() {
+            if head.len() == 0 {
+                head.extend_from_slice(&buf[..buf_read_len]);
+            }
         } else {
             let header_len = parse_res.unwrap();
             let buf_head_len: usize = header_len - (total_head_len - buf_read_len);
@@ -301,6 +303,7 @@ async fn parse_chunked<'a>(
     mut body_tx: Sender<Stream>,
 ) -> Result<usize> {
     loop {
+        // TODO this is broken when BUF_LEN is 10
         if buf_read_len == 0 {
             buf_read_len = not_zero(reader.read(buf).await?)?;
         }
@@ -385,8 +388,10 @@ async fn parse_trailers<'a>(
             extended_buf.extend_from_slice(&buf[..buf_read_len]);
             httparse::parse_headers(&extended_buf, &mut headers)?
         };
-        if parse_res.is_partial() && extended_buf.len() == 0 {
-            extended_buf.extend_from_slice(&buf[..buf_read_len]);
+        if parse_res.is_partial() {
+            if extended_buf.len() == 0 {
+                extended_buf.extend_from_slice(&buf[..buf_read_len]);
+            }
         } else {
             let (header_len, parsed) = parse_res.unwrap();
             let buf_head_read: usize = header_len - (total_trailer_read - buf_read_len);
