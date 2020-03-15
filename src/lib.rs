@@ -173,34 +173,34 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
 async fn parse_head<'a>(
     reader: &'a mut TcpStream,
     buf: &'a mut [u8],
-    mut buf_read: usize,
+    mut buf_read_len: usize,
 ) -> Result<(Request, usize)> {
-    let mut total_head_read = 0;
+    let mut total_head_len = 0;
     let mut head = vec![];
     let (req, buf_head_len, buf_read_len) = loop {
-        if buf_read == 0 {
-            buf_read = not_zero(reader.read(buf).await?)?;
+        if buf_read_len == 0 {
+            buf_read_len = not_zero(reader.read(buf).await?)?;
         }
-        total_head_read += buf_read;
+        total_head_len += buf_read_len;
 
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parser = httparse::Request::new(&mut headers);
 
         let parse_res = if head.len() == 0 {
-            parser.parse(&buf[..buf_read])?
+            parser.parse(&buf[..buf_read_len])?
         } else {
-            head.extend_from_slice(&buf[..buf_read]);
+            head.extend_from_slice(&buf[..buf_read_len]);
             parser.parse(&head)?
         };
         if parse_res.is_partial() && head.len() == 0 {
-            head.extend_from_slice(&buf[..buf_read]);
+            head.extend_from_slice(&buf[..buf_read_len]);
         } else {
             let header_len = parse_res.unwrap();
-            let buf_head_read: usize = header_len - (total_head_read - buf_read);
+            let buf_head_len: usize = header_len - (total_head_len - buf_read_len);
             let req = Request::from_parser(parser)?;
-            break (req, buf_head_read, buf_read);
+            break (req, buf_head_len, buf_read_len);
         }
-        buf_read = 0;
+        buf_read_len = 0;
     };
     rotate_buf(buf, buf_head_len);
     Ok((req, buf_read_len - buf_head_len))
