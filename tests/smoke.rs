@@ -442,6 +442,37 @@ fn trailers() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync
     Ok(())
 }
 
+#[test]
+fn missing_trailers() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /foo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            Trailer: Expires\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            \r\n\
+            ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    assert_eq!(res.status, Status::Ok);
+    assert_eq!(res.headers.get("expires"), None);
+    Ok(())
+}
+
 fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     pub const BUF_LEN: usize = 256;
     let mut total_bytes_read = 0;
