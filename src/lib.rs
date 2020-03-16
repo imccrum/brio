@@ -307,70 +307,33 @@ async fn parse_chunked<'a>(
     let mut chunk_size = vec![];
     loop {
         let mut chunk_size_buf_total_len = 0;
-        let mut total_skip_len = 0;
-        println!("buf_read_len {} coming from last chunk", buf_read_len);
         let (index, chunk_len, skip_len) = loop {
             if buf_read_len == 0 {
                 buf_read_len = not_zero(reader.read(buf).await?)?;
-                //chunk_size_buf_total_len += buf_read_len;
             }
 
-            // here we should be able to just skip the first two bytes if they are
-            // either \n\r that way i believe we can get rid of the extra
-            // condition in the chunk loop and the extra call to parse here
             let mut skip_len = 0;
-            match &buf[..2] {
-                [b'\r', b'\n'] => {
-                    println!("buf starts with \\r\\n {:?}", std::str::from_utf8(&buf));
-                    if chunk_size.len() == 0 {
+            if chunk_size.len() == 0 {
+                match &buf[..2] {
+                    [b'\r', b'\n'] => {
                         skip_len = 2;
                     }
-                }
-                [b'\r', ..] => {
-                    println!("buf starts with \\r {:?}", std::str::from_utf8(&buf));
-                    if chunk_size.len() == 0 {
+                    [b'\r', ..] => {
                         skip_len = 1;
                     }
-                }
-                [b'\n', ..] => {
-                    println!(
-                        "buf starts with \\n {:?} chunk_size.len() {}",
-                        std::str::from_utf8(&buf),
-                        chunk_size.len()
-                    );
-                    if chunk_size.len() == 0 {
+                    [b'\n', ..] => {
                         skip_len = 1;
                     }
-                }
-                _ => {
-                    println!(
-                        "buf doesn't start with new line {:?}",
-                        std::str::from_utf8(&buf)
-                    );
+                    _ => {}
                 }
             }
-
-            total_skip_len += skip_len;
             buf_read_len -= skip_len;
             chunk_size_buf_total_len += buf_read_len;
-            println!(
-                "buf_read_len {} skip_len {} total_skip_len {}",
-                buf_read_len, skip_len, total_skip_len
-            );
             if buf_read_len > 0 {
                 let parse_res = if chunk_size.len() == 0 {
-                    println!(
-                        "array buf {:?}",
-                        std::str::from_utf8(&buf[skip_len..(buf_read_len + skip_len)])
-                    );
                     httparse::parse_chunk_size(&buf[skip_len..(buf_read_len + skip_len)])
                 } else {
                     chunk_size.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
-                    println!(
-                        "vec buf {:?} array buf {:?}",
-                        std::str::from_utf8(&chunk_size),
-                        std::str::from_utf8(&buf),
-                    );
                     httparse::parse_chunk_size(&chunk_size)
                 };
                 let parse_res = match parse_res {
@@ -384,10 +347,6 @@ async fn parse_chunked<'a>(
                 };
 
                 if parse_res.is_partial() {
-                    println!(
-                        "partial result adding to array {:?}",
-                        std::str::from_utf8(&buf[skip_len..(buf_read_len + skip_len)])
-                    );
                     if chunk_size.len() == 0 {
                         chunk_size.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
                     }
@@ -396,36 +355,16 @@ async fn parse_chunked<'a>(
                     let (index, size) = parse_res.unwrap();
                     break (index, size, skip_len);
                 }
-            } else {
-                println!("zero useful bytes in buffer will poll again")
             }
-            // if chunk_size.len() == 0 {
-            //     chunk_size.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
-            // }
             buf_read_len = 0;
         };
 
         let chunk_len = chunk_len as usize;
-        println!(
-            "index {} chunk_size_buf_len {} buf_read_len {} skip_len {}",
-            index, chunk_size_buf_total_len, buf_read_len, skip_len
-        );
         let offset = cmp::min(index, index - (chunk_size_buf_total_len - buf_read_len));
-
-        println!(
-            "index {} chunk_size_buf_len {} buf_read_len {} skip_len {} offset {}",
-            index, chunk_size_buf_total_len, buf_read_len, skip_len, offset
-        );
 
         buf_read_len -= offset;
         rotate_buf(buf, offset + skip_len);
-
-        println!("buf_read_len {} after rotate ", buf_read_len);
-        println!("buf after rotate {:?}", std::str::from_utf8(&buf));
-
         if chunk_len == 0 {
-            // end of body
-            // check for trailers
             if trailers.len() > 0 {
                 let (trailers, trailer_buf_read_len) =
                     parse_trailers(reader, buf, buf_read_len).await?;
@@ -434,11 +373,7 @@ async fn parse_chunked<'a>(
                     println!("discarding unread trailers");
                     // do nothing
                 }
-            } else {
-                // buf_read_len -= 2;
-                // rotate_buf(buf, 2);
             }
-
             break;
         }
 
@@ -451,11 +386,6 @@ async fn parse_chunked<'a>(
                 buf_read_len += select! {
                     res = reader.read(&mut buf[buf_read_len..]).fuse() => not_zero(res?)?
                 };
-                println!(
-                    "polled new bytes for chunk ({}) {:?}",
-                    chunk_len,
-                    std::str::from_utf8(&buf)
-                );
                 buf_chunk_len = cmp::min(chunk_len - total_chunk_len, buf_read_len);
             }
             if let Err(_) = send_body_chunk(buf, &mut body_tx, buf_chunk_len).await {
@@ -465,22 +395,9 @@ async fn parse_chunked<'a>(
 
             total_chunk_len += buf_chunk_len;
             buf_read_len -= buf_chunk_len;
-            //rotate_buf(buf, buf_chunk_len);
-
-            println!(
-                "buf doesn't start with new line {:?}",
-                std::str::from_utf8(&buf)
-            );
-
             if total_chunk_len == chunk_len {
                 rotate_buf(buf, buf_chunk_len);
-                println!(
-                    "after rotating finished chunk {:?}",
-                    std::str::from_utf8(&buf)
-                );
-                //buf_read_len -= 2;
-                //rotate_buf(buf, 2);
-                // entire body has been read
+                // entire chunk has been read
                 break;
             }
             buf_chunk_len = 0;
