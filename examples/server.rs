@@ -13,6 +13,7 @@ type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 's
 // curl -v --http1.0 -H 'connection:keep-alive' localhost:8000/foo localhost:8000/foo
 // curl -v -X POST localhost:8000/bar -d '{"hello": "world"}'
 // wrk -t12 -c400 -d30s http://127.0.0.1:8000/foo
+// cargo test chunked -- --nocapture --test-threads=1
 fn main() {
     let mut app = App::new(());
     app.get("/foo", foo);
