@@ -306,7 +306,6 @@ async fn parse_chunked<'a>(
 ) -> Result<usize> {
     let mut chunk_size = vec![];
     loop {
-        let mut chunk_size_buf_total_len = 0;
         let (index, chunk_len, skip_len) = loop {
             if buf_read_len == 0 {
                 buf_read_len = not_zero(reader.read(buf).await?)?;
@@ -328,7 +327,6 @@ async fn parse_chunked<'a>(
                 }
             }
             buf_read_len -= skip_len;
-            chunk_size_buf_total_len += buf_read_len;
             if buf_read_len > 0 {
                 let parse_res = if chunk_size.len() == 0 {
                     httparse::parse_chunk_size(&buf[skip_len..(buf_read_len + skip_len)])
@@ -360,7 +358,10 @@ async fn parse_chunked<'a>(
         };
 
         let chunk_len = chunk_len as usize;
-        let offset = cmp::min(index, index - (chunk_size_buf_total_len - buf_read_len));
+        let offset = cmp::min(
+            index,
+            index - (cmp::max(chunk_size.len(), buf_read_len) - buf_read_len),
+        );
 
         buf_read_len -= offset;
         rotate_buf(buf, offset + skip_len);
