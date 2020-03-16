@@ -322,7 +322,9 @@ async fn parse_chunked<'a>(
             match &buf[..2] {
                 [b'\r', b'\n'] => {
                     println!("buf starts with \\r\\n {:?}", std::str::from_utf8(&buf));
-                    skip_len = 2;
+                    if chunk_size.len() == 0 {
+                        skip_len = 2;
+                    }
                 }
                 [b'\r', ..] => {
                     println!("buf starts with \\r {:?}", std::str::from_utf8(&buf));
