@@ -1,12 +1,11 @@
+use crate::body::Body;
 use crate::Result;
 use std::collections::hash_map::HashMap;
-
 pub struct Response {
     pub status: Status,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
-    pub bytes: Vec<u8>,
-    pub content_length: usize,
+    pub body_rx: Option<Box<Body>>,
 }
 
 impl Response {
@@ -15,8 +14,7 @@ impl Response {
             status,
             headers: HashMap::new(),
             body: vec![],
-            bytes: vec![],
-            content_length: 0,
+            body_rx: None,
         }
     }
 
@@ -24,7 +22,17 @@ impl Response {
         self.body = json.to_string().into_bytes();
     }
 
-    pub fn to_bytes(&mut self) -> Vec<u8> {
+    pub fn set_body(&mut self, receiver: Body) {
+        self.body_rx = Some(Box::new(receiver))
+    }
+
+    pub fn to_bytes(mut self) -> Vec<u8> {
+        let mut bytes = self.to_bytes_head();
+        bytes.append(&mut self.body);
+        bytes
+    }
+
+    pub fn to_bytes_head(&mut self) -> Vec<u8> {
         let mut bytes: Vec<u8> = vec![];
         self.headers
             .insert("content-length".to_owned(), self.body.len().to_string());
@@ -46,22 +54,19 @@ impl Response {
             .collect();
         bytes.append(&mut headers);
         bytes.extend_from_slice(b"\r\n");
-        bytes.append(&mut self.body);
         bytes
     }
 
     pub fn from_parts(
         parsed: httparse::Response,
         bytes: Vec<u8>,
-        content_length: usize,
         headers: HashMap<String, String>,
     ) -> Result<Response> {
         Ok(Response {
             status: Status::new(parsed.code.unwrap()).unwrap(),
             headers: headers,
-            body: vec![],
-            bytes: bytes,
-            content_length: content_length,
+            body: bytes,
+            body_rx: None,
         })
     }
 }

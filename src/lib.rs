@@ -13,10 +13,12 @@ use std::{
     cmp, collections::HashMap, future::Future, pin::Pin, str, sync::Arc, thread, time::Duration,
 };
 
+mod body;
 mod request;
 mod response;
 mod router;
 
+pub use body::Body;
 pub use request::Request;
 pub use response::{Response, Status};
 pub use router::Context;
@@ -24,7 +26,7 @@ pub use router::Context;
 use request::{Encoding, Method, Stream};
 use router::{Middleware, Path, Route, Router};
 
-pub const BUF_LEN: usize = 10;
+pub const BUF_LEN: usize = 256;
 pub const KEEP_ALIVE_TIMEOUT: u64 = 10;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -158,7 +160,7 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
         req.set_body(body_rx)
     }
     let request_handle = task::spawn(response_loop(req, writer, router));
-    let body_handle = body_loop(
+    let body_handle = parse_body(
         &mut reader,
         buf,
         buf_read_len,
@@ -196,24 +198,17 @@ async fn response_loop<Routes: Send + Sync + Copy + Clone + 'static>(
             format!("timeout={}, max=1000", KEEP_ALIVE_TIMEOUT),
         );
     }
-    writer.write_all(res.to_bytes().as_slice()).await.unwrap();
-    Ok(keep_alive)
-}
-
-async fn body_loop<'a>(
-    reader: &mut TcpStream,
-    buf: &'a mut [u8],
-    buf_read_len: usize,
-    content_len: Option<usize>,
-    transfer_encoding: Encoding,
-    body_tx: Sender<Stream>,
-    trailers: Vec<String>,
-) -> Result<usize> {
-    if transfer_encoding == Encoding::Chunked {
-        Ok(parse_chunked(reader, buf, buf_read_len, trailers, body_tx).await?)
+    if res.body_rx.is_some() {
+        let stream = res.body_rx.take().unwrap();
+        writer
+            .write_all(res.to_bytes_head().as_slice())
+            .await
+            .unwrap();
+        futures::io::copy(stream, &mut writer).await?;
     } else {
-        Ok(parse_body(reader, buf, buf_read_len, content_len, body_tx).await?)
+        writer.write_all(res.to_bytes().as_slice()).await.unwrap();
     }
+    Ok(keep_alive)
 }
 
 async fn parse_head<'a>(
@@ -255,6 +250,22 @@ async fn parse_head<'a>(
 }
 
 async fn parse_body<'a>(
+    reader: &mut TcpStream,
+    buf: &'a mut [u8],
+    buf_read_len: usize,
+    content_len: Option<usize>,
+    transfer_encoding: Encoding,
+    body_tx: Sender<Stream>,
+    trailers: Vec<String>,
+) -> Result<usize> {
+    if transfer_encoding == Encoding::Chunked {
+        Ok(parse_chunked(reader, buf, buf_read_len, trailers, body_tx).await?)
+    } else {
+        Ok(parse_identity(reader, buf, buf_read_len, content_len, body_tx).await?)
+    }
+}
+
+async fn parse_identity<'a>(
     reader: &mut TcpStream,
     buf: &'a mut [u8],
     buf_read_len: usize,
@@ -366,15 +377,6 @@ async fn parse_chunked<'a>(
         buf_read_len -= offset;
         rotate_buf(buf, offset + skip_len);
         if chunk_len == 0 {
-            if trailers.len() > 0 {
-                let (trailers, trailer_buf_read_len) =
-                    parse_trailers(reader, buf, buf_read_len).await?;
-                buf_read_len = trailer_buf_read_len;
-                if let Err(_) = send_trailers(buf, &mut body_tx, trailers).await {
-                    println!("discarding unread trailers");
-                    // do nothing
-                }
-            }
             break;
         }
 
@@ -405,6 +407,15 @@ async fn parse_chunked<'a>(
         }
 
         chunk_size = vec![];
+    }
+
+    if trailers.len() > 0 {
+        let (trailers, trailer_buf_read_len) = parse_trailers(reader, buf, buf_read_len).await?;
+        buf_read_len = trailer_buf_read_len;
+        if let Err(_) = send_trailers(buf, &mut body_tx, trailers).await {
+            println!("discarding unread trailers");
+            // do nothing
+        }
     }
 
     Ok(buf_read_len)

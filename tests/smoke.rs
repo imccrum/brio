@@ -1,7 +1,7 @@
 #![feature(async_closure)]
 #[cfg(test)]
 //cargo test keeps_buffer -- --nocapture --test-threads=1
-use brio::{App, Context, Request, Response, Status};
+use brio::{App, Body, Context, Request, Response, Status};
 use futures::Future;
 use httparse;
 use rand::{thread_rng, Rng};
@@ -24,11 +24,6 @@ use std::{
 
 type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
-fn logger(ctx: Context) -> BoxFuture<Response> {
-    println!("request recived: {}", ctx.req.path);
-    ctx.next()
-}
-
 #[test]
 fn get() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port: u32 = run_app();
@@ -47,7 +42,7 @@ fn get() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"hello": "world"}));
     Ok(())
 }
@@ -70,7 +65,7 @@ fn discards_unread_body() -> std::result::Result<(), Box<dyn std::error::Error +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"foo": "bar"}));
     Ok(())
 }
@@ -99,11 +94,11 @@ fn pipelinined() -> std::result::Result<(), Box<dyn std::error::Error + Send + S
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"foo": "bar"}));
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"hello": "world"}));
 
     Ok(())
@@ -128,7 +123,7 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"foo": "bar"}));
 
     req.write_all(
@@ -143,7 +138,7 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"hello": "world"}));
 
     Ok(())
@@ -174,7 +169,7 @@ fn chunked_small() -> std::result::Result<(), Box<dyn std::error::Error + Send +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"hello": "world"}));
     Ok(())
 }
@@ -217,11 +212,11 @@ fn chunked_small_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"hello": "world"}));
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"hello": "world"}));
     Ok(())
 }
@@ -268,7 +263,7 @@ fn chunked_small_discards_unread(
     assert_eq!(res.status, Status::Ok);
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, json!({"hello": "world"}));
     Ok(())
 }
@@ -300,7 +295,7 @@ fn chunked_large() -> std::result::Result<(), Box<dyn std::error::Error + Send +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
     Ok(())
 }
@@ -347,11 +342,11 @@ fn chunked_large_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
     Ok(())
 }
@@ -402,7 +397,7 @@ fn chunked_large_discards_unread(
     assert_eq!(res.status, Status::Ok);
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.bytes)?;
+    let json = serde_json::from_slice::<Value>(&res.body)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
     Ok(())
 }
@@ -473,6 +468,39 @@ fn missing_trailers() -> std::result::Result<(), Box<dyn std::error::Error + Sen
     Ok(())
 }
 
+#[test]
+fn stream() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            POST /stream HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Transfer-Encoding: chunked\r\n\
+            Trailer: Expires\r\n\
+            \r\n\
+            1\r\n\
+            {\r\n\
+            7\r\n\
+            \"hello\"\r\n\
+            1\r\n\
+            :\r\n\
+            9\r\n \"world\"}\r\n\
+            0\r\n\
+            \r\n\
+            ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    assert_eq!(res.status, Status::Ok);
+    //let json = serde_json::from_slice::<Value>(&res.body)?;
+    //println!("body {:?}", json);
+    //assert_eq!(json, json!({"hello": "world"}));
+    Ok(())
+}
+
 fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     pub const BUF_LEN: usize = 256;
     let mut total_bytes_read = 0;
@@ -513,35 +541,41 @@ fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Erro
 
             let mut take = req.take((content_length - bytes.len()) as u64);
             take.read_to_end(&mut bytes)?;
-            return Ok(Response::from_parts(
-                parser,
-                bytes,
-                content_length,
-                headers,
-            )?);
+
+            return Ok(Response::from_parts(parser, bytes, headers)?);
         }
     }
 }
 
-async fn handler(mut req: Request) -> Response {
-    let json = match req.json().await {
-        Ok(json) => json,
-        Err(_err) => {
-            println!("err {}", _err);
-            return Response::status(Status::BadRequest);
-        }
-    };
-    let mut res = Response::status(Status::Ok);
-    res.json(json);
-    res
-}
-
 fn run_app() -> u32 {
+    async fn stream(mut req: Request) -> Response {
+        let mut res = Response::status(Status::Ok);
+        res.set_body(Body::new(req.take_body().unwrap().unwrap()));
+        res
+    }
+    async fn handler(mut req: Request) -> Response {
+        let json = match req.json().await {
+            Ok(json) => json,
+            Err(_err) => {
+                println!("err {}", _err);
+                return Response::status(Status::BadRequest);
+            }
+        };
+        let mut res = Response::status(Status::Ok);
+        res.json(json);
+        res
+    }
+    fn logger(ctx: Context) -> BoxFuture<Response> {
+        println!("request recived: {}", ctx.req.path);
+        ctx.next()
+    }
+
     let mut rng = thread_rng();
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
         let mut app = App::new(());
         app.post("/foo", handler);
+        app.post("/stream", stream);
         app.post("/bar", async move |_req| {
             let mut res = Response::status(Status::Ok);
             res.json(json!({"foo": "bar"}));

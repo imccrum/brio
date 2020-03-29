@@ -99,20 +99,21 @@ impl Request {
         Ok(&self.bytes)
     }
 
-    async fn body(&mut self) -> Result<()> {
-        let take = self
+    pub fn take_body(&mut self) -> std::io::Result<Option<Receiver<Stream>>> {
+        let body = self
             .body_rx
             .clone()
             .lock()
-            .or(Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "",
-            ))))?
+            .or(Err(std::io::Error::new(std::io::ErrorKind::NotFound, "")))?
             .take();
+        Ok(body)
+    }
 
-        match take {
-            Some(take) => {
-                let mut stream = take.fuse();
+    async fn body(&mut self) -> Result<()> {
+        let body = self.take_body()?;
+        match body {
+            Some(body) => {
+                let mut stream = body.fuse();
                 if self.transfer_endcoding() == Encoding::Chunked {
                     loop {
                         let chunk = select! {
