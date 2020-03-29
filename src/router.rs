@@ -48,13 +48,13 @@ where
     }
 }
 
-pub trait Middleware: Send + Sync {
+pub trait Middleware: Send + Sync + 'static {
     fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response>;
 }
 
 impl<F> Middleware for F
 where
-    F: Send + Sync + Fn(Context) -> BoxFuture<Response>,
+    F: Send + Sync + 'static + Fn(Context) -> BoxFuture<Response>,
 {
     fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response> {
         (self)(ctx)

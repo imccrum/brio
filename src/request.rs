@@ -175,6 +175,30 @@ pub enum Method {
     Patch,
 }
 
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl std::str::FromStr for Method {
+    type Err = ();
+    fn from_str(s: &str) -> std::result::Result<Self, ()> {
+        match s {
+            "get" => Ok(Method::Get),
+            "head" => Ok(Method::Head),
+            "post" => Ok(Method::Post),
+            "put" => Ok(Method::Put),
+            "delete" => Ok(Method::Delete),
+            "connect" => Ok(Method::Connect),
+            "options" => Ok(Method::Options),
+            "trace" => Ok(Method::Trace),
+            "patch" => Ok(Method::Patch),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
 pub enum Encoding {
     Chunked,
@@ -198,23 +222,6 @@ impl std::str::FromStr for Encoding {
     }
 }
 
-impl std::str::FromStr for Method {
-    type Err = ();
-    fn from_str(s: &str) -> std::result::Result<Self, ()> {
-        match s {
-            "get" => Ok(Method::Get),
-            "head" => Ok(Method::Head),
-            "post" => Ok(Method::Post),
-            "put" => Ok(Method::Put),
-            "delete" => Ok(Method::Delete),
-            "connect" => Ok(Method::Connect),
-            "options" => Ok(Method::Options),
-            "trace" => Ok(Method::Trace),
-            "patch" => Ok(Method::Patch),
-            _ => Err(()),
-        }
-    }
-}
 pub enum Chunk {
     Body {
         buf: [u8; crate::BUF_LEN],

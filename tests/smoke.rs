@@ -20,6 +20,7 @@ use std::{
     thread, time,
     time::Duration,
 };
+use time::Instant;
 
 type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
@@ -670,9 +671,22 @@ fn run_app() -> u32 {
         res.json(json);
         res
     }
+
     fn logger(ctx: Context) -> BoxFuture<Response> {
-        println!("request recived: {}", ctx.req.path);
-        ctx.next()
+        let now = Instant::now();
+        let path = ctx.req.path.clone();
+        let method = ctx.req.method.clone();
+        let fut = ctx.next();
+        Box::pin(async move {
+            let res = fut.await;
+            println!(
+                "request {} {} took {:?}",
+                method,
+                path,
+                Instant::now().duration_since(now)
+            );
+            res
+        })
     }
 
     let mut rng = thread_rng();

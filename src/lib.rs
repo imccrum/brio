@@ -64,14 +64,14 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
         self.add_route(Path::new(Method::Delete, path.to_owned()), handler);
         self
     }
-    pub fn middleware(&mut self, middleware: impl Middleware + 'static) -> &Self {
+    pub fn middleware(&mut self, middleware: impl Middleware) -> &Self {
         self.add_middleware(middleware);
         self
     }
     fn add_route(&mut self, route: Path, handler: impl Route) {
         self.router.routes.insert(route, Box::new(handler));
     }
-    fn add_middleware(&mut self, middleware: impl Middleware + 'static) {
+    fn add_middleware(&mut self, middleware: impl Middleware) {
         self.router.middleware.push(Arc::new(middleware));
     }
 }
