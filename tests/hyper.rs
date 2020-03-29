@@ -1,7 +1,6 @@
 #![feature(async_closure)]
 #[cfg(test)]
-//cargo test keeps_buffer -- --nocapture --test-threads=1
-use brio::{App, Context, Request, Response, Status};
+use brio::{App, Ctx, Request, Response, Status};
 use futures::Future;
 use hyper::{Client, Uri};
 use rand::{thread_rng, Rng};
@@ -28,7 +27,7 @@ async fn handler(mut req: Request) -> Response {
     res
 }
 
-fn logger(ctx: Context) -> BoxFuture<Response> {
+fn logger(ctx: Ctx) -> BoxFuture<Response> {
     println!("request recived: {}", ctx.req.path);
     ctx.next()
 }

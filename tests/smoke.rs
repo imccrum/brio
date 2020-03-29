@@ -1,7 +1,6 @@
 #![feature(async_closure)]
 #[cfg(test)]
-//cargo test keeps_buffer -- --nocapture --test-threads=1
-use brio::{App, Body, Context, Encoding, Request, Response, Status};
+use brio::{App, Body, Ctx, Encoding, Request, Response, Status};
 use futures::Future;
 use httparse;
 use rand::{thread_rng, Rng};
@@ -654,44 +653,46 @@ fn rotate_buf(buf: &mut [u8], len: usize) {
 }
 
 fn run_app() -> u32 {
-    async fn stream(mut req: Request) -> Response {
-        let mut res = Response::status(Status::Ok);
-        res.set_body(Body::new(req.take_body().unwrap().unwrap()));
-        res
-    }
-    async fn handler(mut req: Request) -> Response {
-        let json = match req.json().await {
-            Ok(json) => json,
-            Err(_err) => {
-                println!("err {}", _err);
-                return Response::status(Status::BadRequest);
-            }
-        };
-        let mut res = Response::status(Status::Ok);
-        res.json(json);
-        res
-    }
-
-    fn logger(ctx: Context) -> BoxFuture<Response> {
-        let now = Instant::now();
-        let path = ctx.req.path.clone();
-        let method = ctx.req.method.clone();
-        let fut = ctx.next();
-        Box::pin(async move {
-            let res = fut.await;
-            println!(
-                "request {} {} took {:?}",
-                method,
-                path,
-                Instant::now().duration_since(now)
-            );
-            res
-        })
-    }
-
     let mut rng = thread_rng();
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
+        async fn stream(mut req: Request) -> Response {
+            let mut res = Response::status(Status::Ok);
+            res.set_body(Body::new(req.take_body().unwrap().unwrap()));
+            res
+        }
+        async fn handler(mut req: Request) -> Response {
+            let json = match req.json().await {
+                Ok(json) => json,
+                Err(_err) => {
+                    println!("err {}", _err);
+                    return Response::status(Status::BadRequest);
+                }
+            };
+            let mut res = Response::status(Status::Ok);
+            res.json(json);
+            res
+        }
+
+        fn logger(mut ctx: Ctx) -> BoxFuture<Response> {
+            let now = Instant::now();
+            let path = ctx.req.path.clone();
+            ctx.req.headers.insert("foo".to_owned(), "bar".to_owned());
+            let method = ctx.req.method.clone();
+            let fut = ctx.next();
+            Box::pin(async move {
+                let res = fut.await;
+                println!(
+                    "request {} {} took {:?} ({})",
+                    method,
+                    path,
+                    Instant::now().duration_since(now),
+                    res.status as u32
+                );
+                res
+            })
+        }
+
         let mut app = App::new(());
         app.post("/foo", handler);
         app.post("/stream", stream);

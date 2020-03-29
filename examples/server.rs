@@ -1,9 +1,5 @@
 #![feature(async_closure)]
-use brio::App;
-use brio::Context;
-use brio::Request;
-use brio::Response;
-use brio::Status;
+use brio::{App, Ctx, Request, Response, Status};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -25,7 +21,7 @@ fn main() {
     app.run(8000).unwrap();
 }
 
-fn logger(ctx: Context) -> BoxFuture<Response> {
+fn logger(ctx: Ctx) -> BoxFuture<Response> {
     ctx.next()
 }
 

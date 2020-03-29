@@ -106,14 +106,15 @@ impl Response {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Status {
-    Continue,
-    SwitchingProtocol,
-    Ok,
-    BadRequest,
-    NotFound,
-    RequestTimeout,
+    Continue = 100,
+    SwitchingProtocol = 101,
+    Ok = 200,
+    BadRequest = 400,
+    NotFound = 404,
+    RequestTimeout = 408,
+    ImATeapot = 418,
 }
 
 impl Status {
@@ -125,6 +126,7 @@ impl Status {
             400 => Some(Status::BadRequest),
             404 => Some(Status::NotFound),
             408 => Some(Status::RequestTimeout),
+            418 => Some(Status::ImATeapot),
             _ => None,
         }
     }
@@ -136,6 +138,7 @@ impl Status {
             Status::BadRequest => b"400 Bad Request\r\n",
             Status::NotFound => b"404 Not Found\r\n",
             Status::RequestTimeout => b"408 Request Timeout\r\n",
+            Status::ImATeapot => b"418 I'm a teapot\r\n",
         }
     }
 }

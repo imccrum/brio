@@ -21,7 +21,7 @@ mod router;
 pub use body::Body;
 pub use request::{Encoding, Request};
 pub use response::{Response, Status};
-pub use router::Context;
+pub use router::Ctx;
 
 use request::{Chunk, Method};
 use router::{Middleware, Path, Route, Router};
@@ -184,9 +184,9 @@ async fn response_loop<Routes: Send + Sync + Copy + Clone + 'static>(
         Some(route) => route,
         None => &router.not_found,
     };
-    let context = Context {
+    let context = Ctx {
         req: req,
-        endpoint: handler,
+        route: handler,
         next_middleware: router.middleware.as_slice(),
     };
     let mut res = context.next().await;

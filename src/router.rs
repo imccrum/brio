@@ -49,31 +49,31 @@ where
 }
 
 pub trait Middleware: Send + Sync + 'static {
-    fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response>;
+    fn handle<'a>(&'a self, ctx: Ctx<'a>) -> BoxFuture<'a, Response>;
 }
 
 impl<F> Middleware for F
 where
-    F: Send + Sync + 'static + Fn(Context) -> BoxFuture<Response>,
+    F: Send + Sync + 'static + Fn(Ctx) -> BoxFuture<Response>,
 {
-    fn handle<'a>(&'a self, ctx: Context<'a>) -> BoxFuture<'a, Response> {
+    fn handle<'a>(&'a self, ctx: Ctx<'a>) -> BoxFuture<'a, Response> {
         (self)(ctx)
     }
 }
 
-pub struct Context<'a> {
+pub struct Ctx<'a> {
     pub req: Request,
-    pub(crate) endpoint: &'a Box<dyn Route>,
+    pub(crate) route: &'a Box<dyn Route>,
     pub(crate) next_middleware: &'a [Arc<dyn Middleware>],
 }
 
-impl<'a> Context<'a> {
+impl<'a> Ctx<'a> {
     pub fn next(mut self) -> BoxFuture<'a, Response> {
         if let Some((current, next)) = self.next_middleware.split_first() {
             self.next_middleware = next;
             current.handle(self)
         } else {
-            self.endpoint.run(self.req)
+            self.route.run(self.req)
         }
     }
 }
