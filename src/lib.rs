@@ -26,7 +26,7 @@ pub use router::Context;
 use request::{Chunk, Method};
 use router::{Middleware, Path, Route, Router};
 
-pub const BUF_LEN: usize = 256;
+pub const BUF_LEN: usize = 10;
 pub const KEEP_ALIVE_TIMEOUT: u64 = 10;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -328,10 +328,7 @@ async fn parse_chunked<'a>(
                     [b'\r', b'\n'] => {
                         skip_len = 2;
                     }
-                    [b'\r', ..] => {
-                        skip_len = 1;
-                    }
-                    [b'\n', ..] => {
+                    [b'\r', ..] | [b'\n', ..] => {
                         skip_len = 1;
                     }
                     _ => {}
