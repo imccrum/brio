@@ -1,7 +1,7 @@
 #![feature(async_closure)]
 #[cfg(test)]
 //cargo test keeps_buffer -- --nocapture --test-threads=1
-use brio::{App, Body, Context, Request, Response, Status};
+use brio::{App, Body, Context, Encoding, Request, Response, Status};
 use futures::Future;
 use httparse;
 use rand::{thread_rng, Rng};
@@ -14,7 +14,6 @@ use util::*;
 
 use std::{
     cmp,
-    collections::HashMap,
     io::prelude::*,
     net::{Shutdown, TcpStream},
     pin::Pin,
@@ -478,7 +477,6 @@ fn stream() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
             POST /stream HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
             Transfer-Encoding: chunked\r\n\
-            Trailer: Expires\r\n\
             \r\n\
             1\r\n\
             {\r\n\
@@ -495,9 +493,8 @@ fn stream() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
 
     let res = call(&mut req)?;
     assert_eq!(res.status, Status::Ok);
-    //let json = serde_json::from_slice::<Value>(&res.body)?;
-    //println!("body {:?}", json);
-    //assert_eq!(json, json!({"hello": "world"}));
+    let json = serde_json::from_slice::<Value>(&res.body)?;
+    assert_eq!(json, json!({"hello": "world"}));
     Ok(())
 }
 
@@ -506,8 +503,8 @@ fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Erro
     let mut total_bytes_read = 0;
     loop {
         let mut buf = [0u8; BUF_LEN];
-        let bytes_read = req.read(&mut buf)?;
-        if bytes_read == 0 {
+        let mut buf_read_len = req.read(&mut buf)?;
+        if buf_read_len == 0 {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
                 "client disconnected",
@@ -517,33 +514,141 @@ fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Erro
         let mut parser = httparse::Response::new(&mut headers);
         let parse_res = parser.parse(&buf)?;
         if parse_res.is_partial() {
-            total_bytes_read += bytes_read;
+            total_bytes_read += buf_read_len;
         } else {
             let header_len = parse_res.unwrap();
-            let headers: HashMap<String, String> = parser
-                .headers
-                .iter()
-                .map(|&x| {
-                    (
-                        x.name.to_owned().to_lowercase(),
-                        std::str::from_utf8(x.value).unwrap().to_owned(),
-                    )
-                })
-                .collect();
-            let content_length: usize = match headers.get("content-length") {
-                Some(cl) => cl.parse()?,
-                None => 0,
-            };
-            let header_end: usize = header_len - total_bytes_read;
-            let body_end: usize = header_end + content_length;
-            let mut bytes = vec![];
-            bytes.extend_from_slice(&buf[header_end..cmp::min(body_end, BUF_LEN)]);
-
-            let mut take = req.take((content_length - bytes.len()) as u64);
-            take.read_to_end(&mut bytes)?;
-
-            return Ok(Response::from_parts(parser, bytes, headers)?);
+            let mut res = Response::from_parser(parser)?;
+            let buf_header_len: usize = header_len - total_bytes_read;
+            rotate_buf(&mut buf, buf_header_len);
+            buf_read_len = buf_read_len - buf_header_len;
+            if res.transfer_endcoding() == Encoding::Chunked {
+                let body = read_chunked(req, &mut buf, buf_read_len)?;
+                res.body = body;
+            } else {
+                let content_len = res.content_len().unwrap();
+                let mut body = vec![];
+                body.extend_from_slice(&buf[..cmp::min(content_len, buf_read_len)]);
+                let mut take = req.take((content_len - body.len()) as u64);
+                take.read_to_end(&mut body)?;
+                res.body = body;
+            }
+            return Ok(res);
         }
+    }
+}
+
+fn read_chunked<'a>(
+    reader: &mut TcpStream,
+    buf: &'a mut [u8],
+    mut buf_read_len: usize,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut body = vec![];
+    let mut chunk_size = vec![];
+    loop {
+        let (index, chunk_len, skip_len) = loop {
+            if buf_read_len == 0 {
+                buf_read_len = not_zero(reader.read(buf)?)?;
+            }
+            let mut skip_len = 0;
+            if chunk_size.len() == 0 {
+                match &buf[..2] {
+                    [b'\r', b'\n'] => {
+                        skip_len = 2;
+                    }
+                    [b'\r', ..] => {
+                        skip_len = 1;
+                    }
+                    [b'\n', ..] => {
+                        skip_len = 1;
+                    }
+                    _ => {}
+                }
+            }
+            buf_read_len -= skip_len;
+            if buf_read_len > 0 {
+                let parse_res = if chunk_size.len() == 0 {
+                    httparse::parse_chunk_size(&buf[skip_len..(buf_read_len + skip_len)])
+                } else {
+                    chunk_size.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
+                    httparse::parse_chunk_size(&chunk_size)
+                };
+                let parse_res = match parse_res {
+                    Ok(parse_res) => parse_res,
+                    Err(_) => {
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            "invalid chunk",
+                        )));
+                    }
+                };
+
+                if parse_res.is_partial() {
+                    if chunk_size.len() == 0 {
+                        chunk_size.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
+                    }
+                } else {
+                    //buf_read_len;
+                    let (index, size) = parse_res.unwrap();
+                    break (index, size, skip_len);
+                }
+            }
+            buf_read_len = 0;
+        };
+
+        let chunk_len = chunk_len as usize;
+        let offset = cmp::min(
+            index,
+            index - (cmp::max(chunk_size.len(), buf_read_len) - buf_read_len),
+        );
+
+        buf_read_len -= offset;
+        rotate_buf(buf, offset + skip_len);
+        if chunk_len == 0 {
+            break;
+        }
+
+        let mut buf_chunk_len: usize = cmp::min(chunk_len, buf_read_len);
+        let mut total_chunk_len = 0;
+        loop {
+            // here we need to check that we actually have enough of the body
+            if buf_read_len == 0 {
+                // if no unparsed bytes in the current buffer read from the socket
+                buf_read_len += not_zero(reader.read(&mut buf[buf_read_len..])?)?;
+                buf_chunk_len = cmp::min(chunk_len - total_chunk_len, buf_read_len);
+            }
+            body.extend_from_slice(&buf[..buf_chunk_len]);
+            total_chunk_len += buf_chunk_len;
+            buf_read_len -= buf_chunk_len;
+            if total_chunk_len == chunk_len {
+                rotate_buf(buf, buf_chunk_len);
+                // entire chunk has been read
+                break;
+            }
+            buf_chunk_len = 0;
+        }
+
+        chunk_size = vec![];
+    }
+    Ok(body)
+}
+
+fn not_zero(len: usize) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    if len == 0 {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "disconnected",
+        )));
+    } else {
+        Ok(len)
+    }
+}
+
+fn rotate_buf(buf: &mut [u8], len: usize) {
+    if len > 0 {
+        for i in &mut buf[0..len] {
+            *i = 0
+        }
+        buf.rotate_left(len);
     }
 }
 

@@ -19,11 +19,11 @@ mod response;
 mod router;
 
 pub use body::Body;
-pub use request::Request;
+pub use request::{Encoding, Request};
 pub use response::{Response, Status};
 pub use router::Context;
 
-use request::{Encoding, Method, Stream};
+use request::{Chunk, Method};
 use router::{Middleware, Path, Route, Router};
 
 pub const BUF_LEN: usize = 256;
@@ -255,7 +255,7 @@ async fn parse_body<'a>(
     buf_read_len: usize,
     content_len: Option<usize>,
     transfer_encoding: Encoding,
-    body_tx: Sender<Stream>,
+    body_tx: Sender<Chunk>,
     trailers: Vec<String>,
 ) -> Result<usize> {
     if transfer_encoding == Encoding::Chunked {
@@ -270,7 +270,7 @@ async fn parse_identity<'a>(
     buf: &'a mut [u8],
     buf_read_len: usize,
     content_len: Option<usize>,
-    mut body_tx: Sender<Stream>,
+    mut body_tx: Sender<Chunk>,
 ) -> Result<usize> {
     // identity encoding
     // check how much of the body was read when reading parsing the request head
@@ -313,7 +313,7 @@ async fn parse_chunked<'a>(
     buf: &'a mut [u8],
     mut buf_read_len: usize,
     trailers: Vec<String>,
-    mut body_tx: Sender<Stream>,
+    mut body_tx: Sender<Chunk>,
 ) -> Result<usize> {
     let mut chunk_size = vec![];
     loop {
@@ -468,12 +468,12 @@ async fn parse_trailers<'a>(
 
 async fn send_body_chunk<'a>(
     buf: &'a [u8],
-    body_tx: &mut Sender<Stream>,
+    body_tx: &mut Sender<Chunk>,
     buf_body_len: usize,
 ) -> Result<()> {
     let mut tx_buf = [0u8; BUF_LEN];
     tx_buf.copy_from_slice(&buf);
-    let msg = Stream::Body {
+    let msg = Chunk::Body {
         buf: tx_buf,
         size: buf_body_len,
     };
@@ -482,12 +482,12 @@ async fn send_body_chunk<'a>(
 
 async fn send_trailers<'a>(
     buf: &'a [u8],
-    body_tx: &mut Sender<Stream>,
+    body_tx: &mut Sender<Chunk>,
     trailers: HashMap<String, String>,
 ) -> Result<()> {
     let mut tx_buf = [0u8; BUF_LEN];
     tx_buf.copy_from_slice(&buf);
-    let msg = Stream::Trailers { trailers };
+    let msg = Chunk::Trailers { trailers };
     Ok(body_tx.send(msg).await?)
 }
 

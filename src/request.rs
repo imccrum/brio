@@ -3,6 +3,7 @@ use async_std::prelude::*;
 use futures::{select, FutureExt};
 use std::{
     collections::hash_map::HashMap,
+    fmt,
     sync::{Arc, Mutex},
 };
 
@@ -13,7 +14,7 @@ pub struct Request {
     pub path: String,
     pub headers: HashMap<String, String>,
     pub trailers: Option<HashMap<String, String>>,
-    pub body_rx: Arc<Mutex<Option<Receiver<Stream>>>>,
+    pub body_rx: Arc<Mutex<Option<Receiver<Chunk>>>>,
 }
 
 impl Request {
@@ -39,7 +40,7 @@ impl Request {
         })
     }
 
-    pub fn set_body(&mut self, receiver: Receiver<Stream>) {
+    pub fn set_body(&mut self, receiver: Receiver<Chunk>) {
         self.body_rx = Arc::new(Mutex::new(Some(receiver)))
     }
 
@@ -99,7 +100,7 @@ impl Request {
         Ok(&self.bytes)
     }
 
-    pub fn take_body(&mut self) -> std::io::Result<Option<Receiver<Stream>>> {
+    pub fn take_body(&mut self) -> std::io::Result<Option<Receiver<Chunk>>> {
         let body = self
             .body_rx
             .clone()
@@ -123,10 +124,10 @@ impl Request {
                             },
                         };
                         match chunk {
-                            Stream::Body { buf, size } => {
+                            Chunk::Body { buf, size } => {
                                 self.bytes.extend_from_slice(&buf[..size]);
                             }
-                            Stream::Trailers { trailers } => {
+                            Chunk::Trailers { trailers } => {
                                 self.trailers = Some(trailers);
                                 break;
                             }
@@ -142,7 +143,7 @@ impl Request {
                             },
                         };
                         match chunk {
-                            Stream::Body { buf, size } => {
+                            Chunk::Body { buf, size } => {
                                 self.bytes.extend_from_slice(&buf[..size]);
                             }
                             _ => {
@@ -180,6 +181,12 @@ pub enum Encoding {
     Identity,
 }
 
+impl fmt::Display for Encoding {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
 impl std::str::FromStr for Encoding {
     type Err = ();
     fn from_str(s: &str) -> std::result::Result<Self, ()> {
@@ -208,7 +215,7 @@ impl std::str::FromStr for Method {
         }
     }
 }
-pub enum Stream {
+pub enum Chunk {
     Body {
         buf: [u8; crate::BUF_LEN],
         size: usize,

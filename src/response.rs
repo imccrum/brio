@@ -1,5 +1,5 @@
 use crate::body::Body;
-use crate::Result;
+use crate::{request::Encoding, Result};
 use std::collections::hash_map::HashMap;
 pub struct Response {
     pub status: Status,
@@ -19,10 +19,16 @@ impl Response {
     }
 
     pub fn json(&mut self, json: serde_json::Value) {
+        self.headers
+            .insert("content-type".to_owned(), "application/json".to_owned());
         self.body = json.to_string().into_bytes();
     }
 
     pub fn set_body(&mut self, receiver: Body) {
+        self.headers.insert(
+            "transfer-encoding".to_owned(),
+            Encoding::Chunked.to_string().to_ascii_lowercase(),
+        );
         self.body_rx = Some(Box::new(receiver))
     }
 
@@ -32,13 +38,23 @@ impl Response {
         bytes
     }
 
+    pub fn content_len(&self) -> Option<usize> {
+        self.headers
+            .get("content-length")
+            .and_then(|cl: &String| cl.parse().ok())
+    }
+    pub fn transfer_endcoding(&self) -> Encoding {
+        match self.headers.get("transfer-encoding") {
+            Some(encoding) => encoding.parse().unwrap_or(Encoding::Identity),
+            None => Encoding::Identity,
+        }
+    }
+
     pub fn to_bytes_head(&mut self) -> Vec<u8> {
         let mut bytes: Vec<u8> = vec![];
-        self.headers
-            .insert("content-length".to_owned(), self.body.len().to_string());
-        if !self.body.is_empty() {
+        if self.transfer_endcoding() != Encoding::Chunked {
             self.headers
-                .insert("content-type".to_owned(), "application/json".to_owned());
+                .insert("content-length".to_owned(), self.body.len().to_string());
         }
         bytes.extend_from_slice(b"HTTP/1.1 ");
         bytes.extend_from_slice(self.status.bytes());
@@ -55,6 +71,25 @@ impl Response {
         bytes.append(&mut headers);
         bytes.extend_from_slice(b"\r\n");
         bytes
+    }
+
+    pub fn from_parser(parser: httparse::Response) -> Result<Response> {
+        let headers: HashMap<String, String> = parser
+            .headers
+            .iter()
+            .map(|&x| {
+                (
+                    x.name.to_owned().to_lowercase(),
+                    std::str::from_utf8(x.value).unwrap().to_owned(),
+                )
+            })
+            .collect();
+        Ok(Response {
+            status: Status::new(parser.code.unwrap()).unwrap(),
+            headers: headers,
+            body: vec![],
+            body_rx: None,
+        })
     }
 
     pub fn from_parts(
