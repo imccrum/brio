@@ -64,15 +64,31 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
         self.add_route(Path::new(Method::Delete, path.to_owned()), handler);
         self
     }
-    pub fn middleware(&mut self, middleware: impl Middleware) -> &Self {
-        self.add_middleware(middleware);
+    pub fn middleware(&mut self, path: &'static str, middleware: impl Middleware) -> &Self {
+        self.add_middleware(Path::all(path.to_owned()), middleware);
+        self
+    }
+    pub fn get_middleware(&mut self, path: &'static str, middleware: impl Middleware) -> &Self {
+        self.add_middleware(Path::new(Method::Get, path.to_owned()), middleware);
+        self
+    }
+    pub fn post_middleware(&mut self, path: &'static str, middleware: impl Middleware) -> &Self {
+        self.add_middleware(Path::new(Method::Post, path.to_owned()), middleware);
+        self
+    }
+    pub fn put_middleware(&mut self, path: &'static str, middleware: impl Middleware) -> &Self {
+        self.add_middleware(Path::new(Method::Put, path.to_owned()), middleware);
+        self
+    }
+    pub fn delete_middleware(&mut self, path: &'static str, middleware: impl Middleware) -> &Self {
+        self.add_middleware(Path::new(Method::Delete, path.to_owned()), middleware);
         self
     }
     fn add_route(&mut self, route: Path, handler: impl Route) {
         self.router.routes.insert(route, Box::new(handler));
     }
-    fn add_middleware(&mut self, middleware: impl Middleware) {
-        self.router.middleware.push(Arc::new(middleware));
+    fn add_middleware(&mut self, route: Path, middleware: impl Middleware) {
+        self.router.middleware.push((route, Arc::new(middleware)));
     }
 }
 

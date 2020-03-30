@@ -47,6 +47,100 @@ fn get() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 #[test]
+fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    // nothing
+    req.write_all(
+        b"\
+            GET /echo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
+            Math: 1\r\n\
+            Content-Length: 0\r\n\
+            \r\n\
+        ",
+    )
+    .unwrap();
+    let res = call(&mut req)?;
+    assert_eq!(
+        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        "1".to_owned()
+    );
+    // add
+    req.write_all(
+        b"\
+            GET /add/echo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
+            Math: 1\r\n\
+            Content-Length: 0\r\n\
+            \r\n\
+        ",
+    )
+    .unwrap();
+    let res = call(&mut req)?;
+    assert_eq!(
+        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        "5".to_owned()
+    );
+    // mutiply
+    req.write_all(
+        b"\
+                GET /multiply/echo HTTP/1.1\r\n\
+                Host: localhost:8000\r\n\
+                Content-Type: application/json\r\n\
+                Math: 1\r\n\
+                Content-Length: 0\r\n\
+                \r\n\
+            ",
+    )
+    .unwrap();
+    let res = call(&mut req)?;
+    assert_eq!(
+        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        "4".to_owned()
+    );
+    // add, multiply
+    req.write_all(
+        b"\
+            GET /math/echo HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
+            Math: 1\r\n\
+            Content-Length: 0\r\n\
+            \r\n\
+        ",
+    )
+    .unwrap();
+    let res = call(&mut req)?;
+    assert_eq!(
+        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        "20".to_owned()
+    );
+
+    // add, multiply, exponentiate
+    req.write_all(
+        b"\
+                POST /math/echo HTTP/1.1\r\n\
+                Host: localhost:8000\r\n\
+                Content-Type: application/json\r\n\
+                Math: 1\r\n\
+                Content-Length: 0\r\n\
+                \r\n\
+            ",
+    )
+    .unwrap();
+    let res = call(&mut req)?;
+    assert_eq!(
+        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        "160000".to_owned()
+    );
+    Ok(())
+}
+
+#[test]
 fn discards_unread_body() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port: u32 = run_app();
     let uri = format!("127.0.0.1:{}", port);
@@ -661,6 +755,13 @@ fn run_app() -> u32 {
             res.set_body(Body::new(req.take_body().unwrap().unwrap()));
             res
         }
+        async fn math(req: Request) -> Response {
+            let mut res = Response::status(Status::Ok);
+            if let Some(add) = req.headers.get("math") {
+                res.headers.insert("math".to_owned(), add.to_owned());
+            }
+            res
+        }
         async fn handler(mut req: Request) -> Response {
             let json = match req.json().await {
                 Ok(json) => json,
@@ -693,6 +794,36 @@ fn run_app() -> u32 {
             })
         }
 
+        fn add(mut ctx: Ctx) -> BoxFuture<Response> {
+            if let Some(add) = ctx.req.headers.get("math") {
+                if let Ok(mut val) = add.parse::<u32>() {
+                    val += 4;
+                    ctx.req.headers.insert("math".to_owned(), val.to_string());
+                }
+            }
+            ctx.next()
+        }
+
+        fn multiply(mut ctx: Ctx) -> BoxFuture<Response> {
+            if let Some(add) = ctx.req.headers.get("math") {
+                if let Ok(mut val) = add.parse::<u32>() {
+                    val *= 4;
+                    ctx.req.headers.insert("math".to_owned(), val.to_string());
+                }
+            }
+            ctx.next()
+        }
+
+        fn exponentiate(mut ctx: Ctx) -> BoxFuture<Response> {
+            if let Some(add) = ctx.req.headers.get("math") {
+                if let Ok(mut val) = add.parse::<u32>() {
+                    val = val.pow(4);
+                    ctx.req.headers.insert("math".to_owned(), val.to_string());
+                }
+            }
+            ctx.next()
+        }
+
         let mut app = App::new(());
         app.post("/foo", handler);
         app.post("/stream", stream);
@@ -717,7 +848,18 @@ fn run_app() -> u32 {
             }
             res
         });
-        app.middleware(logger);
+        app.get("/add/echo", math);
+        app.get("/multiply/echo", math);
+        app.get("/math/echo", math);
+        app.post("/math/echo", math);
+        app.get("/echo", math);
+        app.middleware("*", logger);
+        app.middleware("/math", add);
+        app.middleware("/math", multiply);
+        app.post_middleware("/math", exponentiate);
+        app.middleware("/add", add);
+        app.middleware("/multiply", multiply);
+        app.middleware("/exponentiate", exponentiate);
         app.run(port)
     });
 

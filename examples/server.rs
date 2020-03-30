@@ -17,7 +17,7 @@ fn main() {
     app.get("/baz", async move |_req: Request| {
         Response::status(Status::Ok)
     });
-    app.middleware(logger);
+    app.middleware("*", logger);
     app.run(8000).unwrap();
 }
 

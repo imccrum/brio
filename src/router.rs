@@ -4,8 +4,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 pub struct Router<Routes> {
-    pub routes: HashMap<Path, Box<dyn Route + 'static>>,
-    pub middleware: Vec<Arc<dyn Middleware>>,
+    pub routes: HashMap<Path, Box<dyn Route>>,
+    pub middleware: Vec<(Path, Arc<dyn Middleware>)>,
     pub config: Routes,
     pub not_found: Box<dyn Route + 'static>,
 }
@@ -21,15 +21,32 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> Router<Routes> {
     }
 }
 
-#[derive(Debug, Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Debug)]
 pub struct Path {
-    method: Method,
+    method: Option<Method>,
     path: String,
 }
 
 impl Path {
     pub fn new(method: Method, path: String) -> Path {
-        Path { method, path }
+        Path {
+            method: Some(method),
+            path,
+        }
+    }
+    pub fn all(path: String) -> Path {
+        Path { method: None, path }
+    }
+    pub fn contains(&self, middleware: &Path) -> bool {
+        match (&self.method, &middleware.method) {
+            (Some(req), Some(middleware)) => {
+                if req != middleware {
+                    return false;
+                }
+            }
+            _ => (),
+        };
+        middleware.path == "*" || self.path.starts_with(&middleware.path)
     }
 }
 
@@ -64,14 +81,23 @@ where
 pub struct Ctx<'a> {
     pub req: Request,
     pub(crate) route: &'a Box<dyn Route>,
-    pub(crate) next_middleware: &'a [Arc<dyn Middleware>],
+    pub(crate) next_middleware: &'a [(Path, Arc<dyn Middleware>)],
 }
 
 impl<'a> Ctx<'a> {
     pub fn next(mut self) -> BoxFuture<'a, Response> {
-        if let Some((current, next)) = self.next_middleware.split_first() {
-            self.next_middleware = next;
-            current.handle(self)
+        let in_path = loop {
+            if let Some((current, next)) = self.next_middleware.split_first() {
+                self.next_middleware = next;
+                if self.req.path().contains(&current.0) {
+                    break Some(current);
+                }
+            } else {
+                break None;
+            }
+        };
+        if let Some(middleware) = in_path {
+            middleware.1.handle(self)
         } else {
             self.route.run(self.req)
         }
