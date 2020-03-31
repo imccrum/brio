@@ -824,7 +824,7 @@ fn run_app() -> u32 {
             ctx.next()
         }
 
-        let mut app = App::new(());
+        let mut app = App::new();
         app.post("/foo", handler);
         app.post("/stream", stream);
         app.post("/bar", async move |_req| {

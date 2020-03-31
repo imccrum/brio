@@ -29,11 +29,9 @@ pub struct App<Routes> {
     router: Router<Routes>,
 }
 
-impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
-    pub fn new(_routes: Routes) -> App<()> {
-        App {
-            router: Router::new(()),
-        }
+impl App<()> {
+    pub fn new() -> App<()> {
+        Self::with_routes(())
     }
     pub fn run(self, port: u32) -> Result<()> {
         let router = Arc::new(self.router);
@@ -80,6 +78,14 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> App<Routes> {
     }
     fn add_middleware(&mut self, route: Path, middleware: impl Middleware) {
         self.router.middleware.push((route, Arc::new(middleware)));
+    }
+}
+
+impl<Routes: Send + Sync + Copy + 'static> App<Routes> {
+    pub fn with_routes(routes: Routes) -> App<Routes> {
+        App {
+            router: Router::new(routes),
+        }
     }
 }
 

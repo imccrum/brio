@@ -11,7 +11,7 @@ type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 's
 // wrk -t12 -c400 -d30s http://127.0.0.1:8000/foo
 // cargo test chunked -- --nocapture --test-threads=1
 fn main() {
-    let mut app = App::new(());
+    let mut app = App::new();
     app.get("/foo", foo);
     app.post("/bar", bar);
     app.get("/baz", async move |_req: Request| {

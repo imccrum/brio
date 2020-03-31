@@ -37,7 +37,7 @@ async fn get() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = thread_rng();
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
-        let mut app = App::new(());
+        let mut app = App::new();
         app.get("/bar", async move |_req| Response::status(Status::Ok));
         app.middleware("*", logger);
         app.run(port)
@@ -56,7 +56,7 @@ async fn post() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = thread_rng();
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
-        let mut app = App::new(());
+        let mut app = App::new();
         app.post("/foo", handler);
         app.run(port)
     });
@@ -84,7 +84,7 @@ async fn multiple_chunks() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = thread_rng();
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
-        let mut app = App::new(());
+        let mut app = App::new();
         app.post("/foo", handler);
         app.middleware("*", logger);
         app.run(port)
@@ -114,7 +114,7 @@ async fn skip_body() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = thread_rng();
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
-        let mut app = App::new(());
+        let mut app = App::new();
         app.post("/foo", handler);
         app.post("/bar", async move |_req| Response::status(Status::Ok));
         app.middleware("*", logger);
