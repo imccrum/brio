@@ -34,7 +34,7 @@ impl Request {
             version: parser.version.unwrap(),
             path: parser.path.unwrap().to_owned(),
             method: parser.method.unwrap().to_lowercase().parse().unwrap(),
-            headers: headers,
+            headers,
             trailers: None,
             body_rx: Arc::new(Mutex::new(None)),
         })
@@ -83,7 +83,7 @@ impl Request {
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect::<String>()
-                .split(",")
+                .split(',')
                 .map(|s| s.to_owned())
                 .collect::<Vec<String>>(),
             None => vec![],
@@ -105,7 +105,12 @@ impl Request {
             .body_rx
             .clone()
             .lock()
-            .or(Err(std::io::Error::new(std::io::ErrorKind::NotFound, "")))?
+            .or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "body error",
+                ))
+            })?
             .take();
         Ok(body)
     }

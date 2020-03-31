@@ -5,7 +5,7 @@ pub struct Response {
     pub status: Status,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
-    pub body_rx: Option<Box<Body>>,
+    pub stream: Option<Box<Body>>,
 }
 
 impl Response {
@@ -14,8 +14,27 @@ impl Response {
             status,
             headers: HashMap::new(),
             body: vec![],
-            body_rx: None,
+            stream: None,
         }
+    }
+
+    pub fn from_parser(parser: httparse::Response) -> Result<Response> {
+        let headers: HashMap<String, String> = parser
+            .headers
+            .iter()
+            .map(|&x| {
+                (
+                    x.name.to_owned().to_lowercase(),
+                    std::str::from_utf8(x.value).unwrap().to_owned(),
+                )
+            })
+            .collect();
+        Ok(Response {
+            status: Status::new(parser.code.unwrap()).unwrap(),
+            headers,
+            body: vec![],
+            stream: None,
+        })
     }
 
     pub fn json(&mut self, json: serde_json::Value) {
@@ -29,11 +48,11 @@ impl Response {
             "transfer-encoding".to_owned(),
             Encoding::Chunked.to_string().to_ascii_lowercase(),
         );
-        self.body_rx = Some(Box::new(receiver))
+        self.stream = Some(Box::new(receiver))
     }
 
-    pub fn to_bytes(mut self) -> Vec<u8> {
-        let mut bytes = self.to_bytes_head();
+    pub fn into_bytes(mut self) -> Vec<u8> {
+        let mut bytes = self.head_as_bytes();
         bytes.append(&mut self.body);
         bytes
     }
@@ -50,7 +69,7 @@ impl Response {
         }
     }
 
-    pub fn to_bytes_head(&mut self) -> Vec<u8> {
+    pub fn head_as_bytes(&mut self) -> Vec<u8> {
         let mut bytes: Vec<u8> = vec![];
         if self.transfer_endcoding() != Encoding::Chunked {
             self.headers
@@ -71,38 +90,6 @@ impl Response {
         bytes.append(&mut headers);
         bytes.extend_from_slice(b"\r\n");
         bytes
-    }
-
-    pub fn from_parser(parser: httparse::Response) -> Result<Response> {
-        let headers: HashMap<String, String> = parser
-            .headers
-            .iter()
-            .map(|&x| {
-                (
-                    x.name.to_owned().to_lowercase(),
-                    std::str::from_utf8(x.value).unwrap().to_owned(),
-                )
-            })
-            .collect();
-        Ok(Response {
-            status: Status::new(parser.code.unwrap()).unwrap(),
-            headers: headers,
-            body: vec![],
-            body_rx: None,
-        })
-    }
-
-    pub fn from_parts(
-        parsed: httparse::Response,
-        bytes: Vec<u8>,
-        headers: HashMap<String, String>,
-    ) -> Result<Response> {
-        Ok(Response {
-            status: Status::new(parsed.code.unwrap()).unwrap(),
-            headers: headers,
-            body: bytes,
-            body_rx: None,
-        })
     }
 }
 

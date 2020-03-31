@@ -115,16 +115,16 @@ async fn response_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     router: Arc<Router<Routes>>,
 ) -> Result<bool> {
     let keep_alive = req.is_keep_alive();
-    let handler = match router.routes.get(&req.path()) {
+    let route = match router.routes.get(&req.path()) {
         Some(route) => route,
         None => &router.not_found,
     };
-    let context = Ctx {
-        req: req,
-        route: handler,
+    let ctx = Ctx {
+        req,
+        route,
         next_middleware: router.middleware.as_slice(),
     };
-    let mut res = context.next().await;
+    let mut res = ctx.next().await;
     if keep_alive {
         res.headers
             .insert("connection".to_owned(), "keep-alive".to_owned());
@@ -133,15 +133,15 @@ async fn response_loop<Routes: Send + Sync + Copy + Clone + 'static>(
             format!("timeout={}, max=1000", KEEP_ALIVE_TIMEOUT),
         );
     }
-    if res.body_rx.is_some() {
-        let stream = res.body_rx.take().unwrap();
+    if res.stream.is_some() {
+        let stream = res.stream.take().unwrap();
         writer
-            .write_all(res.to_bytes_head().as_slice())
+            .write_all(res.head_as_bytes().as_slice())
             .await
             .unwrap();
         futures::io::copy(stream, &mut writer).await?;
     } else {
-        writer.write_all(res.to_bytes().as_slice()).await.unwrap();
+        writer.write_all(res.into_bytes().as_slice()).await.unwrap();
     }
     Ok(keep_alive)
 }
@@ -162,14 +162,14 @@ async fn parse_head<'a>(
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parser = httparse::Request::new(&mut headers);
 
-        let parse_res = if head.len() == 0 {
+        let parse_res = if head.is_empty() {
             parser.parse(&buf[..buf_read_len])?
         } else {
             head.extend_from_slice(&buf[..buf_read_len]);
             parser.parse(&head)?
         };
         if parse_res.is_partial() {
-            if head.len() == 0 {
+            if head.is_empty() {
                 head.extend_from_slice(&buf[..buf_read_len]);
             }
         } else {
@@ -223,7 +223,10 @@ async fn parse_identity<'a>(
                 res = body.read(buf).fuse() => not_zero(res?)?
             };
         }
-        if let Err(_) = send_body_chunk(buf, &mut body_tx, buf_body_len).await {
+        if send_body_chunk(buf, &mut body_tx, buf_body_len)
+            .await
+            .is_err()
+        {
             break;
         }
         total_body_len += buf_body_len;
@@ -250,7 +253,7 @@ async fn parse_chunked<'a>(
     trailers: Vec<String>,
     mut body_tx: Sender<Chunk>,
 ) -> Result<usize> {
-    let mut chunk_size = vec![];
+    let mut extend_buf = vec![];
     loop {
         let (index, chunk_len, skip_len) = loop {
             if buf_read_len == 0 {
@@ -258,7 +261,7 @@ async fn parse_chunked<'a>(
             }
 
             let mut skip_len = 0;
-            if chunk_size.len() == 0 {
+            if extend_buf.is_empty() {
                 match &buf[..2] {
                     [b'\r', b'\n'] => {
                         skip_len = 2;
@@ -271,11 +274,11 @@ async fn parse_chunked<'a>(
             }
             buf_read_len -= skip_len;
             if buf_read_len > 0 {
-                let parse_res = if chunk_size.len() == 0 {
+                let parse_res = if extend_buf.is_empty() {
                     httparse::parse_chunk_size(&buf[skip_len..(buf_read_len + skip_len)])
                 } else {
-                    chunk_size.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
-                    httparse::parse_chunk_size(&chunk_size)
+                    extend_buf.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
+                    httparse::parse_chunk_size(&extend_buf)
                 };
                 let parse_res = match parse_res {
                     Ok(parse_res) => parse_res,
@@ -288,8 +291,8 @@ async fn parse_chunked<'a>(
                 };
 
                 if parse_res.is_partial() {
-                    if chunk_size.len() == 0 {
-                        chunk_size.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
+                    if extend_buf.is_empty() {
+                        extend_buf.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
                     }
                 } else {
                     //buf_read_len;
@@ -303,7 +306,7 @@ async fn parse_chunked<'a>(
         let chunk_len = chunk_len as usize;
         let offset = cmp::min(
             index,
-            index - (cmp::max(chunk_size.len(), buf_read_len) - buf_read_len),
+            index - (cmp::max(extend_buf.len(), buf_read_len) - buf_read_len),
         );
 
         buf_read_len -= offset;
@@ -323,7 +326,10 @@ async fn parse_chunked<'a>(
                 };
                 buf_chunk_len = cmp::min(chunk_len - total_chunk_len, buf_read_len);
             }
-            if let Err(_) = send_body_chunk(buf, &mut body_tx, buf_chunk_len).await {
+            if send_body_chunk(buf, &mut body_tx, buf_chunk_len)
+                .await
+                .is_err()
+            {
                 println!("discarding unread bytes");
                 // do nothing
             }
@@ -338,13 +344,13 @@ async fn parse_chunked<'a>(
             buf_chunk_len = 0;
         }
 
-        chunk_size = vec![];
+        extend_buf = vec![];
     }
 
-    if trailers.len() > 0 {
+    if trailers.is_empty() {
         let (trailers, trailer_buf_read_len) = parse_trailers(reader, buf, buf_read_len).await?;
         buf_read_len = trailer_buf_read_len;
-        if let Err(_) = send_trailers(buf, &mut body_tx, trailers).await {
+        if send_trailers(buf, &mut body_tx, trailers).await.is_err() {
             println!("discarding unread trailers");
             // do nothing
         }
@@ -359,7 +365,7 @@ async fn parse_trailers<'a>(
     mut buf_read_len: usize,
 ) -> Result<(HashMap<String, String>, usize)> {
     let mut total_trailer_read = 0;
-    let mut extended_buf = vec![];
+    let mut extend_buf = vec![];
     let (trailers, buf_trailer_len, buf_read_len) = loop {
         if buf_read_len == 0 {
             buf_read_len = not_zero(reader.read(buf).await?)?;
@@ -367,15 +373,15 @@ async fn parse_trailers<'a>(
         total_trailer_read += buf_read_len;
 
         let mut headers = [httparse::EMPTY_HEADER; 16];
-        let parse_res = if extended_buf.len() == 0 {
+        let parse_res = if extend_buf.is_empty() {
             httparse::parse_headers(&buf[..buf_read_len], &mut headers)?
         } else {
-            extended_buf.extend_from_slice(&buf[..buf_read_len]);
-            httparse::parse_headers(&extended_buf, &mut headers)?
+            extend_buf.extend_from_slice(&buf[..buf_read_len]);
+            httparse::parse_headers(&extend_buf, &mut headers)?
         };
         if parse_res.is_partial() {
-            if extended_buf.len() == 0 {
-                extended_buf.extend_from_slice(&buf[..buf_read_len]);
+            if extend_buf.is_empty() {
+                extend_buf.extend_from_slice(&buf[..buf_read_len]);
             }
         } else {
             let (header_len, parsed) = parse_res.unwrap();
@@ -425,10 +431,10 @@ async fn send_trailers<'a>(
 
 fn not_zero(len: usize) -> Result<usize> {
     if len == 0 {
-        return Err(Box::new(std::io::Error::new(
+        Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::ConnectionReset,
             "disconnected",
-        )));
+        )))
     } else {
         Ok(len)
     }
@@ -448,9 +454,7 @@ fn register_sigterm_listener() -> Result<futures::channel::oneshot::Receiver<boo
         signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
     let (sigterm_tx, sigterm_rx) = futures::channel::oneshot::channel::<bool>();
     thread::spawn(move || {
-        let mut count = 0u32;
-        for _signal in signals.forever() {
-            count += 1;
+        for (count, _signal) in signals.forever().enumerate() {
             if count > 0 {
                 break;
             }

@@ -15,7 +15,7 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> Router<Routes> {
         Router {
             routes: HashMap::new(),
             middleware: vec![],
-            config: config,
+            config,
             not_found: Box::new(not_found),
         }
     }
@@ -38,13 +38,10 @@ impl Path {
         Path { method: None, path }
     }
     pub fn contains(&self, middleware: &Path) -> bool {
-        match (&self.method, &middleware.method) {
-            (Some(req), Some(middleware)) => {
-                if req != middleware {
-                    return false;
-                }
+        if let (Some(req), Some(middleware)) = (&self.method, &middleware.method) {
+            if req != middleware {
+                return false;
             }
-            _ => (),
         };
         middleware.path == "*" || self.path.starts_with(&middleware.path)
     }
