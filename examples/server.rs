@@ -1,7 +1,7 @@
 #![feature(async_closure)]
 use brio::{App, Ctx, Request, Response, Status};
 use std::future::Future;
-use std::pin::Pin;
+use std::{pin::Pin, time::Instant};
 
 type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
@@ -18,11 +18,27 @@ fn main() {
         Response::status(Status::Ok)
     });
     app.middleware("*", logger);
+    app.files("/public/", "/Users/ian/rust/brio-bak/");
     app.run(8000).unwrap();
 }
 
-fn logger(ctx: Ctx) -> BoxFuture<Response> {
-    ctx.next()
+fn logger(mut ctx: Ctx) -> BoxFuture<Response> {
+    let now = Instant::now();
+    let path = ctx.req.path.clone();
+    ctx.req.headers.insert("foo".to_owned(), "bar".to_owned());
+    let method = ctx.req.method.clone();
+    let fut = ctx.next();
+    Box::pin(async move {
+        let res = fut.await;
+        println!(
+            "request {} {} took {:?} ({})",
+            method,
+            path,
+            Instant::now().duration_since(now),
+            res.status as u32
+        );
+        res
+    })
 }
 
 async fn foo(_req: Request) -> Response {

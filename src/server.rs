@@ -70,6 +70,7 @@ async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
             },
             _ = Delay::new(Duration::from_secs(KEEP_ALIVE_TIMEOUT)).fuse() => {
                 println!("keep-alive timeout expired, closing..");
+                break;
             }
         }
     }
@@ -347,7 +348,7 @@ async fn parse_chunked<'a>(
         extend_buf = vec![];
     }
 
-    if trailers.is_empty() {
+    if !trailers.is_empty() {
         let (trailers, trailer_buf_read_len) = parse_trailers(reader, buf, buf_read_len).await?;
         buf_read_len = trailer_buf_read_len;
         if send_trailers(buf, &mut body_tx, trailers).await.is_err() {
@@ -455,7 +456,7 @@ fn register_sigterm_listener() -> Result<futures::channel::oneshot::Receiver<boo
     let (sigterm_tx, sigterm_rx) = futures::channel::oneshot::channel::<bool>();
     thread::spawn(move || {
         for (count, _signal) in signals.forever().enumerate() {
-            if count > 0 {
+            if count >= 0 {
                 break;
             }
         }

@@ -59,7 +59,16 @@ impl Read for Body {
                 }
                 Chunk::Trailers {
                     trailers: _trailers,
-                } => 0,
+                } => {
+                    println!("ignoring trailers? {:?}", _trailers);
+                    self.last_bit
+                        .take()
+                        .map(|last_bit| {
+                            poll_buf[..last_bit.len()].copy_from_slice(&last_bit);
+                            last_bit.len()
+                        })
+                        .unwrap_or(0)
+                }
             },
             None => self
                 .last_bit

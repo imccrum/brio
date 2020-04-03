@@ -1,11 +1,11 @@
 use crate::body::Body;
 use crate::{request::Encoding, Result};
-use std::collections::hash_map::HashMap;
+use std::{collections::hash_map::HashMap, pin::Pin};
 pub struct Response {
     pub status: Status,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
-    pub stream: Option<Box<Body>>,
+    pub stream: Option<Pin<Box<dyn futures::io::AsyncRead + Send>>>,
 }
 
 impl Response {
@@ -48,7 +48,7 @@ impl Response {
             "transfer-encoding".to_owned(),
             Encoding::Chunked.to_string().to_ascii_lowercase(),
         );
-        self.stream = Some(Box::new(receiver))
+        self.stream = Some(Box::pin(receiver))
     }
 
     pub fn into_bytes(mut self) -> Vec<u8> {

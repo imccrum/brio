@@ -24,7 +24,7 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> Router<Routes> {
 #[derive(Hash, Eq, PartialEq, Debug)]
 pub struct Path {
     method: Option<Method>,
-    path: String,
+    pub(crate) path: String,
 }
 
 impl Path {

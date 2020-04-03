@@ -13,6 +13,7 @@ pub use request::{Encoding, Method, Request};
 pub use response::{Response, Status};
 pub use router::Ctx;
 
+use async_std::io::ReadExt;
 use async_std::task;
 use router::{Middleware, Path, Route, Router};
 use std::{future::Future, pin::Pin, str, sync::Arc};
@@ -73,6 +74,13 @@ impl App<()> {
         self.add_middleware(Path::new(Method::Delete, path.to_owned()), middleware);
         self
     }
+    pub fn files(&mut self, path: &'static str, src: &'static str) -> &Self {
+        self.add_middleware(
+            Path::new(Method::Get, path.to_owned()),
+            Files::new(path, src),
+        );
+        self
+    }
     fn add_route(&mut self, route: Path, handler: impl Route) {
         self.router.routes.insert(route, Box::new(handler));
     }
@@ -91,4 +99,40 @@ impl<Routes: Send + Sync + Copy + 'static> App<Routes> {
 
 async fn not_found(_req: Request) -> Response {
     Response::status(Status::NotFound)
+}
+
+pub struct Files {
+    pub path: &'static str,
+    pub src: &'static str,
+}
+
+impl Files {
+    pub fn new(path: &'static str, src: &'static str) -> Files {
+        Files { path, src }
+    }
+}
+
+impl Middleware for Files {
+    fn handle(&self, ctx: Ctx) -> BoxFuture<Response> {
+        let filepath = ctx.req.path.replace(&self.path, "");
+        let src = self.src.clone();
+        Box::pin(async move {
+            let path = format!("{}{}", src, filepath);
+            match async_std::fs::File::open(path).await {
+                Ok(mut file) => {
+                    let mut buf = vec![];
+                    let mut res = Response::status(Status::Ok);
+                    let res = match file.read_to_end(&mut buf).await {
+                        Ok(_) => {
+                            res.body = buf;
+                            res
+                        }
+                        Err(_) => Response::status(Status::NotFound),
+                    };
+                    res
+                }
+                Err(_) => Response::status(Status::NotFound),
+            }
+        })
+    }
 }
