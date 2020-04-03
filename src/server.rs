@@ -9,6 +9,7 @@ use async_std::{
 };
 use futures::{channel::mpsc, join, select, sink::SinkExt, FutureExt};
 use futures_timer::Delay;
+use signal_hook::iterator::Signals;
 use std::{cmp, collections::HashMap, future::Future, str, sync::Arc, thread, time::Duration};
 
 pub(crate) async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
@@ -451,14 +452,11 @@ fn rotate_buf(buf: &mut [u8], len: usize) {
 }
 
 fn register_sigterm_listener() -> Result<futures::channel::oneshot::Receiver<bool>> {
-    let signals =
-        signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
+    let signals = Signals::new(&[signal_hook::SIGTERM, signal_hook::SIGINT])?;
     let (sigterm_tx, sigterm_rx) = futures::channel::oneshot::channel::<bool>();
     thread::spawn(move || {
-        for (count, _signal) in signals.forever().enumerate() {
-            if count >= 0 {
-                break;
-            }
+        for (_count, _signal) in signals.forever().enumerate() {
+            break;
         }
         sigterm_tx.send(true).expect("shutdown notify failed");
     });

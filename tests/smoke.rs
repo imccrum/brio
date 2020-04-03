@@ -592,6 +592,28 @@ fn stream() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
     Ok(())
 }
 
+#[test]
+fn file() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port: u32 = run_app();
+    let uri = format!("127.0.0.1:{}", port);
+    let mut req = connect(&uri)?;
+    req.write_all(
+        b"\
+            GET /public/index.html HTTP/1.1\r\n\
+            Host: localhost:8000\r\n\
+            Content-Length: 0\r\n\
+            \r\n\
+            ",
+    )
+    .unwrap();
+
+    let res = call(&mut req)?;
+    assert_eq!(res.status, Status::Ok);
+    let html = std::str::from_utf8(res.body.as_slice()).unwrap().to_owned();
+    assert_eq!(html.contains("<h1>hello world</h1>"), true);
+    Ok(())
+}
+
 fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     pub const BUF_LEN: usize = 256;
     let mut total_bytes_read = 0;
@@ -854,6 +876,7 @@ fn run_app() -> u32 {
         app.post("/math/echo", math);
         app.get("/echo", math);
         app.middleware("*", logger);
+        app.files("/public/", "./examples/static/");
         app.middleware("/math", add);
         app.middleware("/math", multiply);
         app.post_middleware("/math", exponentiate);

@@ -8,15 +8,14 @@ mod response;
 mod router;
 mod server;
 
+use async_std::{fs, io::ReadExt, task};
+use router::{Middleware, Path, Route, Router};
+use std::{future::Future, pin::Pin, str, sync::Arc};
+
 pub use body::Body;
 pub use request::{Encoding, Method, Request};
 pub use response::{Response, Status};
 pub use router::Ctx;
-
-use async_std::io::ReadExt;
-use async_std::task;
-use router::{Middleware, Path, Route, Router};
-use std::{future::Future, pin::Pin, str, sync::Arc};
 
 pub(crate) const BUF_LEN: usize = 1024;
 pub(crate) const KEEP_ALIVE_TIMEOUT: u64 = 10;
@@ -118,19 +117,22 @@ impl Middleware for Files {
         let src = self.src.clone();
         Box::pin(async move {
             let path = format!("{}{}", src, filepath);
-            match async_std::fs::File::open(path).await {
-                Ok(mut file) => {
-                    let mut buf = vec![];
-                    let mut res = Response::status(Status::Ok);
-                    let res = match file.read_to_end(&mut buf).await {
-                        Ok(_) => {
-                            res.body = buf;
-                            res
-                        }
-                        Err(_) => Response::status(Status::NotFound),
-                    };
-                    res
-                }
+            match fs::canonicalize(path).await {
+                Ok(path) => match async_std::fs::File::open(path).await {
+                    Ok(mut file) => {
+                        let mut buf = vec![];
+                        let mut res = Response::status(Status::Ok);
+                        let res = match file.read_to_end(&mut buf).await {
+                            Ok(_) => {
+                                res.body = buf;
+                                res
+                            }
+                            Err(_) => Response::status(Status::NotFound),
+                        };
+                        res
+                    }
+                    Err(_) => Response::status(Status::NotFound),
+                },
                 Err(_) => Response::status(Status::NotFound),
             }
         })

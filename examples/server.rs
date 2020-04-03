@@ -18,14 +18,13 @@ fn main() {
         Response::status(Status::Ok)
     });
     app.middleware("*", logger);
-    app.files("/public/", "/Users/ian/rust/brio-bak/");
+    app.files("/public/", "./examples/static/");
     app.run(8000).unwrap();
 }
 
-fn logger(mut ctx: Ctx) -> BoxFuture<Response> {
+fn logger(ctx: Ctx) -> BoxFuture<Response> {
     let now = Instant::now();
     let path = ctx.req.path.clone();
-    ctx.req.headers.insert("foo".to_owned(), "bar".to_owned());
     let method = ctx.req.method.clone();
     let fut = ctx.next();
     Box::pin(async move {
