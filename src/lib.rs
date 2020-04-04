@@ -12,7 +12,7 @@ use async_std::{fs, io::ReadExt, task};
 use router::{Middleware, Path, Route, Router};
 use std::{future::Future, pin::Pin, str, sync::Arc};
 
-pub use body::Body;
+pub use body::ChunkedBody;
 pub use request::{Encoding, Method, Request};
 pub use response::{Response, Status};
 pub use router::Ctx;

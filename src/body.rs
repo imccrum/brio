@@ -8,30 +8,36 @@ use std::{
     task::{Context, Poll},
 };
 
-const LE: &[u8; 2] = b"\
+const CRLF: &[u8; 2] = b"\
 \r\n\
 ";
+const LAST_BIT: &[u8; 5] = b"\
+0\r\n\r\n\
+";
 
-pub struct Body {
+pub struct ChunkedBody {
     receiver: Receiver<Chunk>,
     last_bit: Option<[u8; 5]>,
+    extend: Vec<u8>,
 }
 
-impl Body {
-    pub fn new(receiver: Receiver<Chunk>) -> Body {
-        Body {
+impl ChunkedBody {
+    pub fn new(receiver: Receiver<Chunk>) -> ChunkedBody {
+        ChunkedBody {
             receiver,
-            last_bit: Some(
-                b"\
-            0\r\n\r\n\
-            "
-                .to_owned(),
-            ),
+            last_bit: Some(LAST_BIT.to_owned()),
+            extend: vec![],
         }
+    }
+
+    fn copy_to_buf(&mut self, poll_buf: &mut [u8], buf: &[u8], offset: usize) -> usize {
+        // todo save to extend if buffer is too small
+        poll_buf[offset..(offset + buf.len())].copy_from_slice(buf);
+        buf.len()
     }
 }
 
-impl Read for Body {
+impl Read for ChunkedBody {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context,
@@ -44,17 +50,12 @@ impl Read for Body {
         let buf_read = match chunk {
             Some(chunk) => match chunk {
                 Chunk::Body { buf, size } => {
-                    let max = cmp::min(size, poll_buf.len());
                     let mut offset = 0;
-                    let sz = format!("{:x}", max).into_bytes();
-                    offset += sz.len();
-                    poll_buf[..sz.len()].copy_from_slice(sz.as_slice());
-                    poll_buf[offset..(offset + LE.len())].copy_from_slice(LE);
-                    offset += LE.len();
-                    poll_buf[offset..(offset + max)].copy_from_slice(&buf[..max]);
-                    offset += max;
-                    poll_buf[offset..(offset + LE.len())].copy_from_slice(LE);
-                    offset += LE.len();
+                    let sz = format!("{:x}", size).into_bytes();
+                    offset += self.copy_to_buf(poll_buf, sz.as_slice(), offset);
+                    offset += self.copy_to_buf(poll_buf, CRLF, offset);
+                    offset += self.copy_to_buf(poll_buf, &buf[..size], offset);
+                    offset += self.copy_to_buf(poll_buf, CRLF, offset);
                     offset
                 }
                 Chunk::Trailers {

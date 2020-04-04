@@ -1,6 +1,6 @@
 #![feature(async_closure)]
 #[cfg(test)]
-use brio::{App, Body, Ctx, Encoding, Request, Response, Status};
+use brio::{App, ChunkedBody, Ctx, Encoding, Request, Response, Status};
 use futures::Future;
 use httparse;
 use rand::{thread_rng, Rng};
@@ -774,7 +774,7 @@ fn run_app() -> u32 {
     thread::spawn(move || {
         async fn stream(mut req: Request) -> Response {
             let mut res = Response::status(Status::Ok);
-            res.set_body(Body::new(req.take_body().unwrap().unwrap()));
+            res.set_body(ChunkedBody::new(req.stream.take().unwrap()));
             res
         }
         async fn math(req: Request) -> Response {

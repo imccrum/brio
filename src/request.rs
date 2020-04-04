@@ -1,11 +1,7 @@
 use crate::{Path, Receiver, Result};
 use async_std::prelude::*;
 use futures::{select, FutureExt};
-use std::{
-    collections::hash_map::HashMap,
-    fmt,
-    sync::{Arc, Mutex},
-};
+use std::{collections::hash_map::HashMap, fmt};
 
 pub struct Request {
     pub bytes: Vec<u8>,
@@ -14,7 +10,7 @@ pub struct Request {
     pub path: String,
     pub headers: HashMap<String, String>,
     pub trailers: Option<HashMap<String, String>>,
-    pub body_rx: Arc<Mutex<Option<Receiver<Chunk>>>>,
+    pub stream: Option<Receiver<Chunk>>,
 }
 
 impl Request {
@@ -36,12 +32,12 @@ impl Request {
             method: parser.method.unwrap().to_lowercase().parse().unwrap(),
             headers,
             trailers: None,
-            body_rx: Arc::new(Mutex::new(None)),
+            stream: None,
         })
     }
 
     pub fn set_body(&mut self, receiver: Receiver<Chunk>) {
-        self.body_rx = Arc::new(Mutex::new(Some(receiver)))
+        self.stream = Some(receiver)
     }
 
     pub fn is_keep_alive(&self) -> bool {
@@ -100,24 +96,8 @@ impl Request {
         Ok(&self.bytes)
     }
 
-    pub fn take_body(&mut self) -> std::io::Result<Option<Receiver<Chunk>>> {
-        let body = self
-            .body_rx
-            .clone()
-            .lock()
-            .or_else(|_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "body error",
-                ))
-            })?
-            .take();
-        Ok(body)
-    }
-
     async fn body(&mut self) -> Result<()> {
-        let body = self.take_body()?;
-        match body {
+        match self.stream.take() {
             Some(body) => {
                 let mut stream = body.fuse();
                 if self.transfer_endcoding() == Encoding::Chunked {

@@ -1,5 +1,6 @@
-use crate::body::Body;
+use crate::body::ChunkedBody;
 use crate::{request::Encoding, Result};
+use async_std::io::Cursor;
 use std::{collections::hash_map::HashMap, pin::Pin};
 pub struct Response {
     pub status: Status,
@@ -43,7 +44,7 @@ impl Response {
         self.body = json.to_string().into_bytes();
     }
 
-    pub fn set_body(&mut self, receiver: Body) {
+    pub fn set_body(&mut self, receiver: ChunkedBody) {
         self.headers.insert(
             "transfer-encoding".to_owned(),
             Encoding::Chunked.to_string().to_ascii_lowercase(),
@@ -62,6 +63,7 @@ impl Response {
             .get("content-length")
             .and_then(|cl: &String| cl.parse().ok())
     }
+
     pub fn transfer_endcoding(&self) -> Encoding {
         match self.headers.get("transfer-encoding") {
             Some(encoding) => encoding.parse().unwrap_or(Encoding::Identity),
