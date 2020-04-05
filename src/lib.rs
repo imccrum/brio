@@ -120,11 +120,15 @@ impl Middleware for Files {
             match fs::canonicalize(path).await {
                 Ok(path) => match async_std::fs::File::open(path).await {
                     Ok(mut file) => {
-                        let mut buf = vec![];
                         let mut res = Response::status(Status::Ok);
+                        let mut buf = vec![];
                         let res = match file.read_to_end(&mut buf).await {
                             Ok(_) => {
-                                res.body = buf;
+                                let mime = mime_guess::from_path(filepath)
+                                    .first()
+                                    .unwrap_or(mime::APPLICATION_OCTET_STREAM);
+
+                                res.bytes(buf, mime);
                                 res
                             }
                             Err(_) => Response::status(Status::NotFound),

@@ -41,8 +41,9 @@ fn get() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
     Ok(())
 }
 
@@ -68,6 +69,8 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         res.headers.get(&"math".to_owned()).unwrap().to_owned(),
         "1".to_owned()
     );
+    assert_eq!(res.headers.get("content-type"), None);
+
     // add
     req.write_all(
         b"\
@@ -85,6 +88,8 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         res.headers.get(&"math".to_owned()).unwrap().to_owned(),
         "5".to_owned()
     );
+    assert_eq!(res.headers.get("content-type"), None);
+
     // mutiply
     req.write_all(
         b"\
@@ -102,6 +107,8 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         res.headers.get(&"math".to_owned()).unwrap().to_owned(),
         "4".to_owned()
     );
+    assert_eq!(res.headers.get("content-type"), None);
+
     // add, multiply
     req.write_all(
         b"\
@@ -119,6 +126,7 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         res.headers.get(&"math".to_owned()).unwrap().to_owned(),
         "20".to_owned()
     );
+    assert_eq!(res.headers.get("content-type"), None);
 
     // add, multiply, exponentiate
     req.write_all(
@@ -137,6 +145,8 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         res.headers.get(&"math".to_owned()).unwrap().to_owned(),
         "160000".to_owned()
     );
+    assert_eq!(res.headers.get("content-type"), None);
+
     Ok(())
 }
 
@@ -158,8 +168,10 @@ fn discards_unread_body() -> std::result::Result<(), Box<dyn std::error::Error +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"foo": "bar"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -187,12 +199,14 @@ fn pipelinined() -> std::result::Result<(), Box<dyn std::error::Error + Send + S
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"foo": "bar"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
 
     Ok(())
 }
@@ -216,8 +230,9 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"foo": "bar"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
 
     req.write_all(
         b"\
@@ -231,8 +246,9 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
 
     Ok(())
 }
@@ -246,6 +262,7 @@ fn chunked_small() -> std::result::Result<(), Box<dyn std::error::Error + Send +
         b"\
             POST /foo HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             \r\n\
             1\r\n\
@@ -262,8 +279,10 @@ fn chunked_small() -> std::result::Result<(), Box<dyn std::error::Error + Send +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -276,6 +295,7 @@ fn chunked_small_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
         b"\
             POST /foo HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             \r\n\
             1\r\n\
@@ -289,6 +309,7 @@ fn chunked_small_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
             \r\n\
             POST /foo HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             \r\n\
             1\r\n\
@@ -305,12 +326,15 @@ fn chunked_small_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -324,6 +348,7 @@ fn chunked_small_discards_unread(
         b"\
             POST /baz HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             \r\n\
             1\r\n\
@@ -337,6 +362,7 @@ fn chunked_small_discards_unread(
             \r\n\
             POST /foo HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             \r\n\
             1\r\n\
@@ -354,10 +380,13 @@ fn chunked_small_discards_unread(
 
     let res = call(&mut req)?;
     assert_eq!(res.status, Status::Ok);
+    assert_eq!(res.headers.get("content-type"), None);
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -370,6 +399,7 @@ fn chunked_large() -> std::result::Result<(), Box<dyn std::error::Error + Send +
         b"\
         POST /foo HTTP/1.1\r\n\
         Host: localhost:8000\r\n\
+        Content-Type: application/json\r\n\
         Transfer-Encoding: chunked\r\n\
         \r\n\
         1\r\n\
@@ -388,8 +418,10 @@ fn chunked_large() -> std::result::Result<(), Box<dyn std::error::Error + Send +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -402,6 +434,7 @@ fn chunked_large_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
         b"\
         POST /foo HTTP/1.1\r\n\
         Host: localhost:8000\r\n\
+        Content-Type: application/json\r\n\
         Transfer-Encoding: chunked\r\n\
         \r\n\
         1\r\n\
@@ -417,6 +450,7 @@ fn chunked_large_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
         \r\n\
         POST /foo HTTP/1.1\r\n\
         Host: localhost:8000\r\n\
+        Content-Type: application/json\r\n\
         Transfer-Encoding: chunked\r\n\
         \r\n\
         1\r\n\
@@ -435,12 +469,15 @@ fn chunked_large_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -454,6 +491,7 @@ fn chunked_large_discards_unread(
         b"\
         POST /baz HTTP/1.1\r\n\
         Host: localhost:8000\r\n\
+        Content-Type: application/json\r\n\
         Transfer-Encoding: chunked\r\n\
         \r\n\
         1\r\n\
@@ -469,6 +507,7 @@ fn chunked_large_discards_unread(
         \r\n\
         POST /foo HTTP/1.1\r\n\
         Host: localhost:8000\r\n\
+        Content-Type: application/json\r\n\
         Transfer-Encoding: chunked\r\n\
         \r\n\
         1\r\n\
@@ -488,10 +527,13 @@ fn chunked_large_discards_unread(
 
     let res = call(&mut req)?;
     assert_eq!(res.status, Status::Ok);
+    assert_eq!(res.headers.get("content-type"), None);
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -504,6 +546,7 @@ fn trailers() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync
         b"\
             POST /trailers HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             Trailer: Expires\r\n\
             \r\n\
@@ -527,6 +570,8 @@ fn trailers() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync
         res.headers.get("expires").unwrap(),
         "Fri, 01 Nov 2019 07:28:00 GMT",
     );
+    assert_eq!(res.headers.get("content-type"), None);
+
     Ok(())
 }
 
@@ -539,6 +584,7 @@ fn missing_trailers() -> std::result::Result<(), Box<dyn std::error::Error + Sen
         b"\
             POST /foo HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             Trailer: Expires\r\n\
             \r\n\
@@ -558,6 +604,8 @@ fn missing_trailers() -> std::result::Result<(), Box<dyn std::error::Error + Sen
     let res = call(&mut req)?;
     assert_eq!(res.status, Status::Ok);
     assert_eq!(res.headers.get("expires"), None);
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -570,6 +618,7 @@ fn stream() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
         b"\
             POST /stream HTTP/1.1\r\n\
             Host: localhost:8000\r\n\
+            Content-Type: application/json\r\n\
             Transfer-Encoding: chunked\r\n\
             \r\n\
             1\r\n\
@@ -587,8 +636,10 @@ fn stream() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
 
     let res = call(&mut req)?;
     assert_eq!(res.status, Status::Ok);
-    let json = serde_json::from_slice::<Value>(&res.body)?;
+    let json = serde_json::from_slice::<Value>(&res.buf)?;
     assert_eq!(json, json!({"hello": "world"}));
+    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+
     Ok(())
 }
 
@@ -609,8 +660,10 @@ fn file() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let res = call(&mut req)?;
     assert_eq!(res.status, Status::Ok);
-    let html = std::str::from_utf8(res.body.as_slice()).unwrap().to_owned();
+    let html = std::str::from_utf8(res.buf.as_slice()).unwrap().to_owned();
     assert_eq!(html.contains("<h1>hello world</h1>"), true);
+    assert_eq!(res.headers.get("content-type").unwrap(), "text/html");
+
     Ok(())
 }
 
@@ -639,14 +692,14 @@ fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Erro
             buf_read_len = buf_read_len - buf_header_len;
             if res.transfer_endcoding() == Encoding::Chunked {
                 let body = read_chunked(req, &mut buf, buf_read_len)?;
-                res.body = body;
+                res.buf = body;
             } else {
                 let content_len = res.content_len().unwrap();
                 let mut body = vec![];
                 body.extend_from_slice(&buf[..cmp::min(content_len, buf_read_len)]);
                 let mut take = req.take((content_len - body.len()) as u64);
                 take.read_to_end(&mut body)?;
-                res.body = body;
+                res.buf = body;
             }
             return Ok(res);
         }
@@ -774,7 +827,10 @@ fn run_app() -> u32 {
     thread::spawn(move || {
         async fn stream(mut req: Request) -> Response {
             let mut res = Response::status(Status::Ok);
-            res.set_body(ChunkedBody::new(req.stream.take().unwrap()));
+            res.stream(
+                ChunkedBody::new(req.stream.take().unwrap()),
+                req.content_type(),
+            );
             res
         }
         async fn math(req: Request) -> Response {

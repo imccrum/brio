@@ -93,10 +93,10 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
     let (body_tx, body_rx) = mpsc::channel(1);
     let trailers = req.check_trailers();
     let cl = req.content_len();
-    if transfer_encoding == Encoding::Chunked || cl.filter(|cl: &usize| cl > &0usize).is_some() {
-        req.set_body(body_rx)
+    if transfer_encoding == Encoding::Chunked || cl.unwrap_or(0) > 0 {
+        req.stream(body_rx)
     }
-    let request_handle = task::spawn(response_loop(req, writer, router));
+    let res_handle = task::spawn(response_loop(req, writer, router));
     let body_handle = parse_body(
         &mut reader,
         buf,
@@ -107,7 +107,7 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
         trailers,
     );
 
-    let (buf_read_len, keep_alive) = join!(body_handle, request_handle);
+    let (buf_read_len, keep_alive) = join!(body_handle, res_handle);
     Ok((keep_alive?, buf_read_len?))
 }
 

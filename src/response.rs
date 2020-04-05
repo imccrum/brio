@@ -1,11 +1,12 @@
 use crate::body::ChunkedBody;
 use crate::{request::Encoding, Result};
-use async_std::io::Cursor;
+use mime;
 use std::{collections::hash_map::HashMap, pin::Pin};
+
 pub struct Response {
     pub status: Status,
     pub headers: HashMap<String, String>,
-    pub body: Vec<u8>,
+    pub buf: Vec<u8>,
     pub stream: Option<Pin<Box<dyn futures::io::AsyncRead + Send>>>,
 }
 
@@ -14,7 +15,7 @@ impl Response {
         Response {
             status,
             headers: HashMap::new(),
-            body: vec![],
+            buf: vec![],
             stream: None,
         }
     }
@@ -33,28 +34,40 @@ impl Response {
         Ok(Response {
             status: Status::new(parser.code.unwrap()).unwrap(),
             headers,
-            body: vec![],
+            buf: vec![],
             stream: None,
         })
     }
 
     pub fn json(&mut self, json: serde_json::Value) {
-        self.headers
-            .insert("content-type".to_owned(), "application/json".to_owned());
-        self.body = json.to_string().into_bytes();
+        self.headers.insert(
+            "content-type".to_owned(),
+            mime::APPLICATION_JSON.to_string(),
+        );
+        self.buf = json.to_string().into_bytes();
     }
 
-    pub fn set_body(&mut self, receiver: ChunkedBody) {
+    pub fn bytes(&mut self, buf: Vec<u8>, mime: mime::Mime) {
+        self.headers
+            .insert("content-type".to_owned(), mime.to_string());
+        self.buf = buf;
+    }
+
+    pub fn stream(&mut self, receiver: ChunkedBody, mime: Option<mime::Mime>) {
         self.headers.insert(
             "transfer-encoding".to_owned(),
             Encoding::Chunked.to_string().to_ascii_lowercase(),
         );
+        if let Some(mime) = mime {
+            self.headers
+                .insert("content-type".to_owned(), mime.to_string());
+        }
         self.stream = Some(Box::pin(receiver))
     }
 
     pub fn into_bytes(mut self) -> Vec<u8> {
         let mut bytes = self.head_as_bytes();
-        bytes.append(&mut self.body);
+        bytes.append(&mut self.buf);
         bytes
     }
 
@@ -62,6 +75,12 @@ impl Response {
         self.headers
             .get("content-length")
             .and_then(|cl: &String| cl.parse().ok())
+    }
+
+    pub fn content_type(&self) -> Option<mime::Mime> {
+        self.headers
+            .get("content-type")
+            .and_then(|ct: &String| ct.parse().ok())
     }
 
     pub fn transfer_endcoding(&self) -> Encoding {
@@ -75,7 +94,7 @@ impl Response {
         let mut bytes: Vec<u8> = vec![];
         if self.transfer_endcoding() != Encoding::Chunked {
             self.headers
-                .insert("content-length".to_owned(), self.body.len().to_string());
+                .insert("content-length".to_owned(), self.buf.len().to_string());
         }
         bytes.extend_from_slice(b"HTTP/1.1 ");
         bytes.extend_from_slice(self.status.bytes());

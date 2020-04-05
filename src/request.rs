@@ -36,8 +36,24 @@ impl Request {
         })
     }
 
-    pub fn set_body(&mut self, receiver: Receiver<Chunk>) {
+    pub fn stream(&mut self, receiver: Receiver<Chunk>) {
         self.stream = Some(receiver)
+    }
+
+    pub fn path(&self) -> Path {
+        Path::new(self.method, self.path.clone())
+    }
+
+    pub fn content_len(&self) -> Option<usize> {
+        self.headers
+            .get("content-length")
+            .and_then(|cl: &String| cl.parse().ok())
+    }
+
+    pub fn content_type(&self) -> Option<mime::Mime> {
+        self.headers
+            .get("content-type")
+            .and_then(|ct: &String| ct.parse().ok())
     }
 
     pub fn is_keep_alive(&self) -> bool {
@@ -52,16 +68,6 @@ impl Request {
             Some(encoding) => encoding.parse().unwrap_or(Encoding::Identity),
             None => Encoding::Identity,
         }
-    }
-
-    pub fn path(&self) -> Path {
-        Path::new(self.method, self.path.clone())
-    }
-
-    pub fn content_len(&self) -> Option<usize> {
-        self.headers
-            .get("content-length")
-            .and_then(|cl: &String| cl.parse().ok())
     }
 
     pub async fn json(&mut self) -> Result<serde_json::Value> {
