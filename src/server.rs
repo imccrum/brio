@@ -209,18 +209,18 @@ async fn read_identity<'a>(
     content_len: Option<usize>,
     mut body_tx: Sender<Chunk>,
 ) -> Result<usize> {
-    // identity encoding
-    // check how much of the body was read when reading parsing the request head
     let content_len = content_len.unwrap_or(0);
+    // Check how much of the body was read when parsing the request head
     let mut buf_body_len: usize = cmp::min(content_len, buf_read_len);
-    // check how much of a later pipelined request was read when parsing the request head
+    // Check how much of a subsequent pipelined request was read when parsing
+    // the request head
     let buf_next_len = buf_read_len - buf_body_len;
-    // create a reader for unread body bytes
+    // Create a reader for unread body bytes
     let mut body = reader.take((content_len - buf_body_len) as u64);
     let mut total_body_len = 0;
     while total_body_len < content_len {
         if buf_body_len == 0 {
-            // if no unparsed bytes in the current buffer read from the socket
+            // If no unparsed bytes in the current buffer read from the socket
             buf_body_len = select! {
                 res = body.read(buf).fuse() => not_zero(res?)?
             };
@@ -233,17 +233,20 @@ async fn read_identity<'a>(
         }
         total_body_len += buf_body_len;
         if total_body_len == content_len {
-            // entire body has been read
+            // Entire body has been read
             break;
         }
         buf_body_len = 0;
     }
-    // all bytes were sent or an error occured, drop the body channel
+    // All bytes were sent or the receiver disconnected, drop the body sender
     drop(body_tx);
     if total_body_len < content_len {
-        // if there are remaining unread
+        // Discard any unread bytes for the current request. This can happen if
+        // the request handler did not read the body)
         futures::io::copy(body, &mut futures::io::sink()).await?;
     }
+    // Rotate the buffer so that any bytes from a subsequent pipelined request
+    // are at the beginning
     rotate_buf(buf, buf_body_len);
     Ok(buf_next_len)
 }
@@ -257,13 +260,19 @@ async fn read_chunked<'a>(
 ) -> Result<usize> {
     let mut extend_buf = vec![];
     loop {
+        // Continue parsing chunks until we get 0\r\n\r\n\
         let (index, chunk_len, skip_len) = loop {
+            // Continue parsing until we get a chunk size
             if buf_read_len == 0 {
+                // If no unparsed bytes in the current buffer read from the
+                // socket
                 buf_read_len = not_zero(reader.read(buf).await?)?;
             }
-
             let mut skip_len = 0;
             if extend_buf.is_empty() {
+                // Check if we should skip the terminating \r\n\ from the
+                // previous chunk. N.B. this only happens if the line feed
+                // occured right at the end of the last buffer
                 match &buf[..2] {
                     [b'\r', b'\n'] => {
                         skip_len = 2;
@@ -273,8 +282,12 @@ async fn read_chunked<'a>(
                     }
                     _ => {}
                 }
+                // If found bytes from the last chunk subtract from
+                // buf_read_len because they are not part of the current
+                // chunk
+                buf_read_len -= skip_len;
             }
-            buf_read_len -= skip_len;
+
             if buf_read_len > 0 {
                 let parse_res = if extend_buf.is_empty() {
                     httparse::parse_chunk_size(&buf[skip_len..(buf_read_len + skip_len)])
@@ -297,35 +310,36 @@ async fn read_chunked<'a>(
                         extend_buf.extend_from_slice(&buf[skip_len..(buf_read_len + skip_len)]);
                     }
                 } else {
-                    //buf_read_len;
-                    let (index, size) = parse_res.unwrap();
-                    break (index, size, skip_len);
+                    let (index, chunk_len) = parse_res.unwrap();
+                    break (index, chunk_len as usize, skip_len);
                 }
             }
             buf_read_len = 0;
         };
-
-        let chunk_len = chunk_len as usize;
+        // Check what part of the currnent buf is the chunk index
         let offset = cmp::min(
             index,
             index - (cmp::max(extend_buf.len(), buf_read_len) - buf_read_len),
         );
-
         buf_read_len -= offset;
+        // Rotate the buffer so that any bytes from the chunk body are at the
+        // beginning
         rotate_buf(buf, offset + skip_len);
+
         if chunk_len == 0 {
+            // This is the last chunk
             break;
         }
-
+        // Track how many bytes from this chunk are in the buf
         let mut buf_chunk_len: usize = cmp::min(chunk_len, buf_read_len);
         let mut total_chunk_len = 0;
         loop {
-            // here we need to check that we actually have enough of the body
             if buf_read_len == 0 {
-                // if no unparsed bytes in the current buffer read from the socket
+                // If no unparsed bytes in the current buffer read from the socket
                 buf_read_len += select! {
                     res = reader.read(&mut buf[buf_read_len..]).fuse() => not_zero(res?)?
                 };
+                // Make sure we only consider bytes from the current chunk
                 buf_chunk_len = cmp::min(chunk_len - total_chunk_len, buf_read_len);
             }
             if send_body_chunk(buf, &mut body_tx, buf_chunk_len)
@@ -333,14 +347,15 @@ async fn read_chunked<'a>(
                 .is_err()
             {
                 println!("discarding unread bytes");
-                // do nothing
             }
 
             total_chunk_len += buf_chunk_len;
             buf_read_len -= buf_chunk_len;
             if total_chunk_len == chunk_len {
+                // The entire chunk has been read
+                // Rotate the buffer so that any bytes from the next chunk (or the next
+                // request )are at the beginning
                 rotate_buf(buf, buf_chunk_len);
-                // entire chunk has been read
                 break;
             }
             buf_chunk_len = 0;
@@ -354,7 +369,6 @@ async fn read_chunked<'a>(
         buf_read_len = trailer_buf_read_len;
         if send_trailers(buf, &mut body_tx, trailers).await.is_err() {
             println!("discarding unread trailers");
-            // do nothing
         }
     }
 
@@ -401,7 +415,8 @@ async fn read_trailers<'a>(
         }
         buf_read_len = 0;
     };
-
+    // Rotate the buffer so that any bytes from a subsequent pipelined request
+    // are at the beginning
     rotate_buf(buf, buf_trailer_len);
     Ok((trailers, buf_read_len - buf_trailer_len))
 }
