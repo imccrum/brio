@@ -61,7 +61,7 @@ async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     let mut buf_read_len = 0;
     loop {
         select! {
-            conn = request_loop(&mut stream, &mut buf, buf_read_len, router.clone()).fuse() => {
+            conn = handle_request(&mut stream, &mut buf, buf_read_len, router.clone()).fuse() => {
                 let (keep_alive, buf_next_len) = conn?;
                 if !keep_alive {
                     println!("client did not request keep-alive, closing..");
@@ -78,7 +78,7 @@ async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     Ok(())
 }
 
-async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
+async fn handle_request<'a, Routes: Send + Sync + Copy + Clone + 'static>(
     stream: &mut TcpStream,
     buf: &'a mut [u8],
     buf_read_len: usize,
@@ -87,7 +87,7 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
     let writer = stream.clone();
     let mut reader = stream.clone();
 
-    let (mut req, buf_read_len) = parse_head(&mut reader, buf, buf_read_len).await?;
+    let (mut req, buf_read_len) = read_head(&mut reader, buf, buf_read_len).await?;
 
     let transfer_encoding = req.transfer_endcoding();
     let (body_tx, body_rx) = mpsc::channel(1);
@@ -96,8 +96,8 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
     if transfer_encoding == Encoding::Chunked || cl.unwrap_or(0) > 0 {
         req.stream(body_rx)
     }
-    let res_handle = task::spawn(response_loop(req, writer, router));
-    let body_handle = parse_body(
+    let response_handle = task::spawn(write_response(req, writer, router));
+    let body_handle = read_body(
         &mut reader,
         buf,
         buf_read_len,
@@ -107,11 +107,11 @@ async fn request_loop<'a, Routes: Send + Sync + Copy + Clone + 'static>(
         trailers,
     );
 
-    let (buf_read_len, keep_alive) = join!(body_handle, res_handle);
+    let (buf_read_len, keep_alive) = join!(body_handle, response_handle);
     Ok((keep_alive?, buf_read_len?))
 }
 
-async fn response_loop<Routes: Send + Sync + Copy + Clone + 'static>(
+async fn write_response<Routes: Send + Sync + Copy + Clone + 'static>(
     req: Request,
     mut writer: TcpStream,
     router: Arc<Router<Routes>>,
@@ -148,7 +148,7 @@ async fn response_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     Ok(keep_alive)
 }
 
-async fn parse_head<'a>(
+async fn read_head<'a>(
     reader: &'a mut TcpStream,
     buf: &'a mut [u8],
     mut buf_read_len: usize,
@@ -186,7 +186,7 @@ async fn parse_head<'a>(
     Ok((req, buf_read_len - buf_head_len))
 }
 
-async fn parse_body<'a>(
+async fn read_body<'a>(
     reader: &mut TcpStream,
     buf: &'a mut [u8],
     buf_read_len: usize,
@@ -196,13 +196,13 @@ async fn parse_body<'a>(
     trailers: Vec<String>,
 ) -> Result<usize> {
     if transfer_encoding == Encoding::Chunked {
-        Ok(parse_chunked(reader, buf, buf_read_len, trailers, body_tx).await?)
+        Ok(read_chunked(reader, buf, buf_read_len, trailers, body_tx).await?)
     } else {
-        Ok(parse_identity(reader, buf, buf_read_len, content_len, body_tx).await?)
+        Ok(read_identity(reader, buf, buf_read_len, content_len, body_tx).await?)
     }
 }
 
-async fn parse_identity<'a>(
+async fn read_identity<'a>(
     reader: &mut TcpStream,
     buf: &'a mut [u8],
     buf_read_len: usize,
@@ -248,7 +248,7 @@ async fn parse_identity<'a>(
     Ok(buf_next_len)
 }
 
-async fn parse_chunked<'a>(
+async fn read_chunked<'a>(
     reader: &mut TcpStream,
     buf: &'a mut [u8],
     mut buf_read_len: usize,
@@ -350,7 +350,7 @@ async fn parse_chunked<'a>(
     }
 
     if !trailers.is_empty() {
-        let (trailers, trailer_buf_read_len) = parse_trailers(reader, buf, buf_read_len).await?;
+        let (trailers, trailer_buf_read_len) = read_trailers(reader, buf, buf_read_len).await?;
         buf_read_len = trailer_buf_read_len;
         if send_trailers(buf, &mut body_tx, trailers).await.is_err() {
             println!("discarding unread trailers");
@@ -361,7 +361,7 @@ async fn parse_chunked<'a>(
     Ok(buf_read_len)
 }
 
-async fn parse_trailers<'a>(
+async fn read_trailers<'a>(
     reader: &'a mut TcpStream,
     buf: &'a mut [u8],
     mut buf_read_len: usize,
