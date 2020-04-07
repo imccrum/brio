@@ -2,7 +2,6 @@ use crate::{request::Chunk, Receiver};
 use async_std::io::Read;
 use futures::Stream;
 use std::{
-    cmp,
     io::Error,
     pin::Pin,
     task::{Context, Poll},

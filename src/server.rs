@@ -117,7 +117,7 @@ async fn write_response<Routes: Send + Sync + Copy + Clone + 'static>(
     router: Arc<Router<Routes>>,
 ) -> Result<bool> {
     let keep_alive = req.is_keep_alive();
-    let route = match router.routes.get(&req.path()) {
+    let route = match router.routes.get(&req.route()) {
         Some(route) => route,
         None => &router.not_found,
     };
@@ -154,7 +154,7 @@ async fn read_head<'a>(
     mut buf_read_len: usize,
 ) -> Result<(Request, usize)> {
     let mut total_head_len = 0;
-    let mut head = vec![];
+    let mut extend_buf = vec![];
     let (req, buf_head_len, buf_read_len) = loop {
         if buf_read_len == 0 {
             buf_read_len = not_zero(reader.read(buf).await?)?;
@@ -164,15 +164,15 @@ async fn read_head<'a>(
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut parser = httparse::Request::new(&mut headers);
 
-        let parse_res = if head.is_empty() {
+        let parse_res = if extend_buf.is_empty() {
             parser.parse(&buf[..buf_read_len])?
         } else {
-            head.extend_from_slice(&buf[..buf_read_len]);
-            parser.parse(&head)?
+            extend_buf.extend_from_slice(&buf[..buf_read_len]);
+            parser.parse(&extend_buf)?
         };
         if parse_res.is_partial() {
-            if head.is_empty() {
-                head.extend_from_slice(&buf[..buf_read_len]);
+            if extend_buf.is_empty() {
+                extend_buf.extend_from_slice(&buf[..buf_read_len]);
             }
         } else {
             let header_len = parse_res.unwrap();
@@ -354,7 +354,7 @@ async fn read_chunked<'a>(
             if total_chunk_len == chunk_len {
                 // The entire chunk has been read
                 // Rotate the buffer so that any bytes from the next chunk (or the next
-                // request )are at the beginning
+                // request) are at the beginning
                 rotate_buf(buf, buf_chunk_len);
                 break;
             }
@@ -384,6 +384,7 @@ async fn read_trailers<'a>(
     let mut extend_buf = vec![];
     let (trailers, buf_trailer_len, buf_read_len) = loop {
         if buf_read_len == 0 {
+            // If no unparsed bytes in the current buffer read from the socket
             buf_read_len = not_zero(reader.read(buf).await?)?;
         }
         total_trailer_read += buf_read_len;

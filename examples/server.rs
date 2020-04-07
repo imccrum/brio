@@ -15,7 +15,7 @@ fn main() {
     app.get("/foo", foo);
     app.post("/bar", bar);
     app.get("/baz", async move |_req: Request| {
-        Response::status(Status::Ok)
+        Response::with_status(Status::Ok)
     });
     app.middleware("*", logger);
     app.files("/public/", "./examples/static/");
@@ -24,8 +24,8 @@ fn main() {
 
 fn logger(ctx: Ctx) -> BoxFuture<Response> {
     let now = Instant::now();
-    let path = ctx.req.path.clone();
-    let method = ctx.req.method.clone();
+    let path = ctx.req().route().path().clone();
+    let method = ctx.req().route().method().unwrap().clone();
     let fut = ctx.next();
     Box::pin(async move {
         let res = fut.await;
@@ -34,14 +34,14 @@ fn logger(ctx: Ctx) -> BoxFuture<Response> {
             method,
             path,
             Instant::now().duration_since(now),
-            res.status as u32
+            res.status() as u32
         );
         res
     })
 }
 
 async fn foo(_req: Request) -> Response {
-    let res = Response::status(Status::Ok);
+    let res = Response::with_status(Status::Ok);
     res
 }
 
@@ -49,10 +49,10 @@ async fn bar(mut req: Request) -> Response {
     let json = match req.json().await {
         Ok(json) => json,
         Err(_err) => {
-            return Response::status(Status::BadRequest);
+            return Response::with_status(Status::BadRequest);
         }
     };
-    let mut res = Response::status(Status::Ok);
-    res.json(json);
+    let mut res = Response::with_status(Status::Ok);
+    res.set_json(json);
     res
 }

@@ -19,16 +19,16 @@ async fn handler(mut req: Request) -> Response {
     let json = match req.json().await {
         Ok(json) => json,
         Err(_err) => {
-            return Response::status(Status::BadRequest);
+            return Response::with_status(Status::BadRequest);
         }
     };
-    let mut res = Response::status(Status::Ok);
-    res.json(json);
+    let mut res = Response::with_status(Status::Ok);
+    res.set_json(json);
     res
 }
 
 fn logger(ctx: Ctx) -> BoxFuture<Response> {
-    println!("request recived: {}", ctx.req.path);
+    println!("request recived: {}", ctx.req().route().path());
     ctx.next()
 }
 
@@ -38,7 +38,7 @@ async fn get() -> Result<(), Box<dyn std::error::Error>> {
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
         let mut app = App::new();
-        app.get("/bar", async move |_req| Response::status(Status::Ok));
+        app.get("/bar", async move |_req| Response::with_status(Status::Ok));
         app.middleware("*", logger);
         app.run(port)
     });
@@ -116,7 +116,7 @@ async fn skip_body() -> Result<(), Box<dyn std::error::Error>> {
     thread::spawn(move || {
         let mut app = App::new();
         app.post("/foo", handler);
-        app.post("/bar", async move |_req| Response::status(Status::Ok));
+        app.post("/bar", async move |_req| Response::with_status(Status::Ok));
         app.middleware("*", logger);
         app.run(port)
     });

@@ -41,9 +41,12 @@ fn get() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
     Ok(())
 }
 
@@ -66,10 +69,10 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
     let res = call(&mut req)?;
     assert_eq!(
-        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        res.headers().get(&"math".to_owned()).unwrap().to_owned(),
         "1".to_owned()
     );
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.headers().get("content-type"), None);
 
     // add
     req.write_all(
@@ -85,10 +88,10 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
     let res = call(&mut req)?;
     assert_eq!(
-        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        res.headers().get(&"math".to_owned()).unwrap().to_owned(),
         "5".to_owned()
     );
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.headers().get("content-type"), None);
 
     // mutiply
     req.write_all(
@@ -104,10 +107,10 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
     let res = call(&mut req)?;
     assert_eq!(
-        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        res.headers().get(&"math".to_owned()).unwrap().to_owned(),
         "4".to_owned()
     );
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.headers().get("content-type"), None);
 
     // add, multiply
     req.write_all(
@@ -123,10 +126,10 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
     let res = call(&mut req)?;
     assert_eq!(
-        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        res.headers().get(&"math".to_owned()).unwrap().to_owned(),
         "20".to_owned()
     );
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.headers().get("content-type"), None);
 
     // add, multiply, exponentiate
     req.write_all(
@@ -142,10 +145,10 @@ fn math() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
     let res = call(&mut req)?;
     assert_eq!(
-        res.headers.get(&"math".to_owned()).unwrap().to_owned(),
+        res.headers().get(&"math".to_owned()).unwrap().to_owned(),
         "160000".to_owned()
     );
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.headers().get("content-type"), None);
 
     Ok(())
 }
@@ -168,9 +171,12 @@ fn discards_unread_body() -> std::result::Result<(), Box<dyn std::error::Error +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"foo": "bar"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -199,14 +205,20 @@ fn pipelinined() -> std::result::Result<(), Box<dyn std::error::Error + Send + S
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"foo": "bar"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -230,9 +242,12 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"foo": "bar"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     req.write_all(
         b"\
@@ -246,9 +261,12 @@ fn preserves_partial() -> std::result::Result<(), Box<dyn std::error::Error + Se
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -279,9 +297,12 @@ fn chunked_small() -> std::result::Result<(), Box<dyn std::error::Error + Send +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -326,14 +347,20 @@ fn chunked_small_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -379,13 +406,16 @@ fn chunked_small_discards_unread(
     .unwrap();
 
     let res = call(&mut req)?;
-    assert_eq!(res.status, Status::Ok);
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.status(), Status::Ok);
+    assert_eq!(res.headers().get("content-type"), None);
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -418,9 +448,12 @@ fn chunked_large() -> std::result::Result<(), Box<dyn std::error::Error + Send +
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes())?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -469,14 +502,20 @@ fn chunked_large_keep_alive() -> std::result::Result<(), Box<dyn std::error::Err
     .unwrap();
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(&res.bytes())?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -526,13 +565,16 @@ fn chunked_large_discards_unread(
     .unwrap();
 
     let res = call(&mut req)?;
-    assert_eq!(res.status, Status::Ok);
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.status(), Status::Ok);
+    assert_eq!(res.headers().get("content-type"), None);
 
     let res = call(&mut req)?;
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, Value::Array(vec![large_body(), large_body()]));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -565,12 +607,12 @@ fn trailers() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync
     .unwrap();
 
     let res = call(&mut req)?;
-    assert_eq!(res.status, Status::Ok);
+    assert_eq!(res.status(), Status::Ok);
     assert_eq!(
-        res.headers.get("expires").unwrap(),
+        res.headers().get("expires").unwrap(),
         "Fri, 01 Nov 2019 07:28:00 GMT",
     );
-    assert_eq!(res.headers.get("content-type"), None);
+    assert_eq!(res.headers().get("content-type"), None);
 
     Ok(())
 }
@@ -602,9 +644,12 @@ fn missing_trailers() -> std::result::Result<(), Box<dyn std::error::Error + Sen
     .unwrap();
 
     let res = call(&mut req)?;
-    assert_eq!(res.status, Status::Ok);
-    assert_eq!(res.headers.get("expires"), None);
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(res.status(), Status::Ok);
+    assert_eq!(res.headers().get("expires"), None);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -635,10 +680,13 @@ fn stream() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
     .unwrap();
 
     let res = call(&mut req)?;
-    assert_eq!(res.status, Status::Ok);
-    let json = serde_json::from_slice::<Value>(&res.buf)?;
+    assert_eq!(res.status(), Status::Ok);
+    let json = serde_json::from_slice::<Value>(res.bytes())?;
     assert_eq!(json, json!({"hello": "world"}));
-    assert_eq!(res.headers.get("content-type").unwrap(), "application/json");
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "application/json"
+    );
 
     Ok(())
 }
@@ -659,10 +707,12 @@ fn file() -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .unwrap();
 
     let res = call(&mut req)?;
-    assert_eq!(res.status, Status::Ok);
-    let html = std::str::from_utf8(res.buf.as_slice()).unwrap().to_owned();
+    assert_eq!(res.status(), Status::Ok);
+    let html = std::str::from_utf8(res.bytes().as_slice())
+        .unwrap()
+        .to_owned();
     assert_eq!(html.contains("<h1>hello world</h1>"), true);
-    assert_eq!(res.headers.get("content-type").unwrap(), "text/html");
+    assert_eq!(res.headers().get("content-type").unwrap(), "text/html");
 
     Ok(())
 }
@@ -692,14 +742,14 @@ fn call<'a>(req: &'a mut TcpStream) -> Result<Response, Box<dyn std::error::Erro
             buf_read_len = buf_read_len - buf_header_len;
             if res.transfer_endcoding() == Encoding::Chunked {
                 let body = read_chunked(req, &mut buf, buf_read_len)?;
-                res.buf = body;
+                res.set_buf(body);
             } else {
                 let content_len = res.content_len().unwrap();
                 let mut body = vec![];
                 body.extend_from_slice(&buf[..cmp::min(content_len, buf_read_len)]);
                 let mut take = req.take((content_len - body.len()) as u64);
                 take.read_to_end(&mut body)?;
-                res.buf = body;
+                res.set_buf(body);
             }
             return Ok(res);
         }
@@ -826,17 +876,17 @@ fn run_app() -> u32 {
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
         async fn stream(mut req: Request) -> Response {
-            let mut res = Response::status(Status::Ok);
-            res.stream(
-                ChunkedBody::new(req.stream.take().unwrap()),
+            let mut res = Response::with_status(Status::Ok);
+            res.set_stream(
+                ChunkedBody::new(req.take_stream().unwrap()),
                 req.content_type(),
             );
             res
         }
-        async fn math(req: Request) -> Response {
-            let mut res = Response::status(Status::Ok);
-            if let Some(add) = req.headers.get("math") {
-                res.headers.insert("math".to_owned(), add.to_owned());
+        async fn math(mut req: Request) -> Response {
+            let mut res = Response::with_status(Status::Ok);
+            if let Some(add) = req.headers().get("math") {
+                res.headers_mut().insert("math".to_owned(), add.to_owned());
             }
             res
         }
@@ -845,19 +895,21 @@ fn run_app() -> u32 {
                 Ok(json) => json,
                 Err(_err) => {
                     println!("err {}", _err);
-                    return Response::status(Status::BadRequest);
+                    return Response::with_status(Status::BadRequest);
                 }
             };
-            let mut res = Response::status(Status::Ok);
-            res.json(json);
+            let mut res = Response::with_status(Status::Ok);
+            res.set_json(json);
             res
         }
 
         fn logger(mut ctx: Ctx) -> BoxFuture<Response> {
             let now = Instant::now();
-            let path = ctx.req.path.clone();
-            ctx.req.headers.insert("foo".to_owned(), "bar".to_owned());
-            let method = ctx.req.method.clone();
+            let path = ctx.req().route().path().clone();
+            ctx.req_mut()
+                .headers_mut()
+                .insert("foo".to_owned(), "bar".to_owned());
+            let method = ctx.req().route().method().unwrap().clone();
             let fut = ctx.next();
             Box::pin(async move {
                 let res = fut.await;
@@ -866,37 +918,43 @@ fn run_app() -> u32 {
                     method,
                     path,
                     Instant::now().duration_since(now),
-                    res.status as u32
+                    res.status() as u32
                 );
                 res
             })
         }
 
         fn add(mut ctx: Ctx) -> BoxFuture<Response> {
-            if let Some(add) = ctx.req.headers.get("math") {
+            if let Some(add) = ctx.req_mut().headers().get("math") {
                 if let Ok(mut val) = add.parse::<u32>() {
                     val += 4;
-                    ctx.req.headers.insert("math".to_owned(), val.to_string());
+                    ctx.req_mut()
+                        .headers_mut()
+                        .insert("math".to_owned(), val.to_string());
                 }
             }
             ctx.next()
         }
 
         fn multiply(mut ctx: Ctx) -> BoxFuture<Response> {
-            if let Some(add) = ctx.req.headers.get("math") {
+            if let Some(add) = ctx.req_mut().headers().get("math") {
                 if let Ok(mut val) = add.parse::<u32>() {
                     val *= 4;
-                    ctx.req.headers.insert("math".to_owned(), val.to_string());
+                    ctx.req_mut()
+                        .headers_mut()
+                        .insert("math".to_owned(), val.to_string());
                 }
             }
             ctx.next()
         }
 
         fn exponentiate(mut ctx: Ctx) -> BoxFuture<Response> {
-            if let Some(add) = ctx.req.headers.get("math") {
+            if let Some(add) = ctx.req_mut().headers().get("math") {
                 if let Ok(mut val) = add.parse::<u32>() {
                     val = val.pow(4);
-                    ctx.req.headers.insert("math".to_owned(), val.to_string());
+                    ctx.req_mut()
+                        .headers_mut()
+                        .insert("math".to_owned(), val.to_string());
                 }
             }
             ctx.next()
@@ -906,22 +964,22 @@ fn run_app() -> u32 {
         app.post("/foo", handler);
         app.post("/stream", stream);
         app.post("/bar", async move |_req| {
-            let mut res = Response::status(Status::Ok);
-            res.json(json!({"foo": "bar"}));
+            let mut res = Response::with_status(Status::Ok);
+            res.set_json(json!({"foo": "bar"}));
             res
         });
-        app.post("/baz", async move |_req| Response::status(Status::Ok));
+        app.post("/baz", async move |_req| Response::with_status(Status::Ok));
         app.post("/trailers", async move |mut req: Request| {
-            let mut res = Response::status(Status::Ok);
+            let mut res = Response::with_status(Status::Ok);
             match req.trailers().await {
                 Some(trailers) => {
-                    res.headers.insert(
+                    res.headers_mut().insert(
                         "expires".to_owned(),
                         trailers.get("expires").unwrap().to_owned(),
                     );
                 }
                 None => {
-                    return Response::status(Status::BadRequest);
+                    return Response::with_status(Status::BadRequest);
                 }
             }
             res

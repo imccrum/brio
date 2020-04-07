@@ -4,13 +4,13 @@ use futures::{select, FutureExt};
 use std::{collections::hash_map::HashMap, fmt};
 
 pub struct Request {
-    pub bytes: Vec<u8>,
-    pub version: u8,
-    pub method: Method,
-    pub path: String,
-    pub headers: HashMap<String, String>,
-    pub trailers: Option<HashMap<String, String>>,
-    pub stream: Option<Receiver<Chunk>>,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) version: u8,
+    pub(crate) method: Method,
+    pub(crate) path: String,
+    pub(crate) headers: HashMap<String, String>,
+    pub(crate) trailers: Option<HashMap<String, String>>,
+    pub(crate) stream: Option<Receiver<Chunk>>,
 }
 
 impl Request {
@@ -40,8 +40,20 @@ impl Request {
         self.stream = Some(receiver)
     }
 
-    pub fn path(&self) -> Path {
+    pub fn take_stream(&mut self) -> Option<Receiver<Chunk>> {
+        self.stream.take()
+    }
+
+    pub fn route(&self) -> Path {
         Path::new(self.method, self.path.clone())
+    }
+
+    pub fn headers(&mut self) -> &HashMap<String, String> {
+        &self.headers
+    }
+
+    pub fn headers_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.headers
     }
 
     pub fn content_len(&self) -> Option<usize> {

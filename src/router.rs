@@ -4,10 +4,10 @@ use std::future::Future;
 use std::sync::Arc;
 
 pub struct Router<Routes> {
-    pub routes: HashMap<Path, Box<dyn Route>>,
-    pub middleware: Vec<(Path, Arc<dyn Middleware>)>,
-    pub config: Routes,
-    pub not_found: Box<dyn Route + 'static>,
+    pub(crate) routes: HashMap<Path, Box<dyn Route>>,
+    pub(crate) middleware: Vec<(Path, Arc<dyn Middleware>)>,
+    pub(crate) not_found: Box<dyn Route + 'static>,
+    pub(crate) config: Routes,
 }
 
 impl<Routes: Send + Sync + Copy + Clone + 'static> Router<Routes> {
@@ -15,8 +15,8 @@ impl<Routes: Send + Sync + Copy + Clone + 'static> Router<Routes> {
         Router {
             routes: HashMap::new(),
             middleware: vec![],
-            config,
             not_found: Box::new(not_found),
+            config,
         }
     }
 }
@@ -33,6 +33,12 @@ impl Path {
             method: Some(method),
             path,
         }
+    }
+    pub fn path(&self) -> &String {
+        &self.path
+    }
+    pub fn method(&self) -> &Option<Method> {
+        &self.method
     }
     pub fn all(path: String) -> Path {
         Path { method: None, path }
@@ -76,7 +82,7 @@ where
 }
 
 pub struct Ctx<'a> {
-    pub req: Request,
+    pub(crate) req: Request,
     pub(crate) route: &'a Box<dyn Route>,
     pub(crate) next_middleware: &'a [(Path, Arc<dyn Middleware>)],
 }
@@ -86,7 +92,7 @@ impl<'a> Ctx<'a> {
         let in_path = loop {
             if let Some((current, next)) = self.next_middleware.split_first() {
                 self.next_middleware = next;
-                if self.req.path().contains(&current.0) {
+                if self.req.route().contains(&current.0) {
                     break Some(current);
                 }
             } else {
@@ -98,5 +104,13 @@ impl<'a> Ctx<'a> {
         } else {
             self.route.run(self.req)
         }
+    }
+
+    pub fn req(&self) -> &Request {
+        &self.req
+    }
+
+    pub fn req_mut(&mut self) -> &mut Request {
+        &mut self.req
     }
 }

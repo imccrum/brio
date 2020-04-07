@@ -17,7 +17,7 @@ pub use request::{Encoding, Method, Request};
 pub use response::{Response, Status};
 pub use router::Ctx;
 
-pub(crate) const BUF_LEN: usize = 1024;
+pub(crate) const BUF_LEN: usize = 2;
 pub(crate) const KEEP_ALIVE_TIMEOUT: u64 = 10;
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -97,7 +97,7 @@ impl<Routes: Send + Sync + Copy + 'static> App<Routes> {
 }
 
 async fn not_found(_req: Request) -> Response {
-    Response::status(Status::NotFound)
+    Response::with_status(Status::NotFound)
 }
 
 pub struct Files {
@@ -120,7 +120,7 @@ impl Middleware for Files {
             match fs::canonicalize(path).await {
                 Ok(path) => match async_std::fs::File::open(path).await {
                     Ok(mut file) => {
-                        let mut res = Response::status(Status::Ok);
+                        let mut res = Response::with_status(Status::Ok);
                         let mut buf = vec![];
                         let res = match file.read_to_end(&mut buf).await {
                             Ok(_) => {
@@ -128,16 +128,16 @@ impl Middleware for Files {
                                     .first()
                                     .unwrap_or(mime::APPLICATION_OCTET_STREAM);
 
-                                res.bytes(buf, mime);
+                                res.set_bytes(buf, mime);
                                 res
                             }
-                            Err(_) => Response::status(Status::NotFound),
+                            Err(_) => Response::with_status(Status::NotFound),
                         };
                         res
                     }
-                    Err(_) => Response::status(Status::NotFound),
+                    Err(_) => Response::with_status(Status::NotFound),
                 },
-                Err(_) => Response::status(Status::NotFound),
+                Err(_) => Response::with_status(Status::NotFound),
             }
         })
     }

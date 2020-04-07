@@ -4,14 +4,14 @@ use mime;
 use std::{collections::hash_map::HashMap, pin::Pin};
 
 pub struct Response {
-    pub status: Status,
-    pub headers: HashMap<String, String>,
-    pub buf: Vec<u8>,
-    pub stream: Option<Pin<Box<dyn futures::io::AsyncRead + Send>>>,
+    pub(crate) status: Status,
+    pub(crate) headers: HashMap<String, String>,
+    pub(crate) buf: Vec<u8>,
+    pub(crate) stream: Option<Pin<Box<dyn futures::io::AsyncRead + Send>>>,
 }
 
 impl Response {
-    pub fn status(status: Status) -> Response {
+    pub fn with_status(status: Status) -> Response {
         Response {
             status,
             headers: HashMap::new(),
@@ -39,7 +39,19 @@ impl Response {
         })
     }
 
-    pub fn json(&mut self, json: serde_json::Value) {
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.headers
+    }
+
+    pub fn headers_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.headers
+    }
+
+    pub fn bytes(&self) -> &Vec<u8> {
+        &self.buf
+    }
+
+    pub fn set_json(&mut self, json: serde_json::Value) {
         self.headers.insert(
             "content-type".to_owned(),
             mime::APPLICATION_JSON.to_string(),
@@ -47,13 +59,13 @@ impl Response {
         self.buf = json.to_string().into_bytes();
     }
 
-    pub fn bytes(&mut self, buf: Vec<u8>, mime: mime::Mime) {
+    pub fn set_bytes(&mut self, buf: Vec<u8>, mime: mime::Mime) {
         self.headers
             .insert("content-type".to_owned(), mime.to_string());
         self.buf = buf;
     }
 
-    pub fn stream(&mut self, receiver: ChunkedBody, mime: Option<mime::Mime>) {
+    pub fn set_stream(&mut self, receiver: ChunkedBody, mime: Option<mime::Mime>) {
         self.headers.insert(
             "transfer-encoding".to_owned(),
             Encoding::Chunked.to_string().to_ascii_lowercase(),
@@ -69,6 +81,10 @@ impl Response {
         let mut bytes = self.head_as_bytes();
         bytes.append(&mut self.buf);
         bytes
+    }
+
+    pub fn status(&self) -> Status {
+        self.status
     }
 
     pub fn content_len(&self) -> Option<usize> {
@@ -111,6 +127,10 @@ impl Response {
         bytes.append(&mut headers);
         bytes.extend_from_slice(b"\r\n");
         bytes
+    }
+
+    pub fn set_buf(&mut self, buf: Vec<u8>) {
+        self.buf = buf;
     }
 }
 
