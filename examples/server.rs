@@ -1,8 +1,7 @@
 #![feature(async_closure)]
 use brio::{App, Ctx, Request, Response, Status};
 use log::info;
-use std::future::Future;
-use std::{pin::Pin, time::Instant};
+use std::{future::Future, pin::Pin, time::Instant};
 
 type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 'static>>;
 
