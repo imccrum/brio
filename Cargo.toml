@@ -1,8 +1,10 @@
 [package]
 name = "brio"
-version = "0.1.0"
-authors = ["imccrum <ianmccrum@gmail.com>"]
+description = "Async http server and web framework"
+version = "0.2.0"
+authors = ["imccrum <me@ianmccrum.com>"]
 edition = "2018"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
