@@ -9,6 +9,7 @@ use async_std::{
 };
 use futures::{channel::mpsc, join, select, sink::SinkExt, FutureExt};
 use futures_timer::Delay;
+use log::{error, info, trace};
 use signal_hook::iterator::Signals;
 use std::{cmp, collections::HashMap, future::Future, str, sync::Arc, thread, time::Duration};
 
@@ -18,7 +19,7 @@ pub(crate) async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
     router: Arc<Router<Routes>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(format!("{}:{}", host, port)).await?;
-    println!("listening on {}:{}", host, port);
+    info!("listening on {}:{}", host, port);
     let mut incoming = listener.incoming();
     let mut sigterm_rx = register_sigterm_listener()?.fuse();
     loop {
@@ -26,7 +27,7 @@ pub(crate) async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
             stream = incoming.next().fuse() => match stream {
                 Some(stream) => {
                     let stream = stream?;
-                    //println!("accepting from: {}", stream.peer_addr()?);
+                    trace!("accepting from: {}", stream.peer_addr()?);
                     spawn_and_log_error(keep_alive_loop(stream, router.clone()));
                 },
                 None => {
@@ -38,7 +39,7 @@ pub(crate) async fn accept_loop<Routes: Send + Sync + Copy + Clone + 'static>(
             }
         }
     }
-    println!("shutting down");
+    info!("shutting down");
     Ok(())
 }
 
@@ -48,7 +49,7 @@ where
 {
     task::spawn(async move {
         if let Err(e) = fut.await {
-            eprintln!("{}", e)
+            error!("{}", e)
         }
     })
 }
@@ -64,13 +65,13 @@ async fn keep_alive_loop<Routes: Send + Sync + Copy + Clone + 'static>(
             conn = handle_request(&mut stream, &mut buf, buf_read_len, router.clone()).fuse() => {
                 let (keep_alive, buf_next_len) = conn?;
                 if !keep_alive {
-                    println!("client did not request keep-alive, closing..");
+                    trace!("client did not request keep-alive, closing..");
                     break;
                 }
                 buf_read_len = buf_next_len;
             },
             _ = Delay::new(Duration::from_secs(KEEP_ALIVE_TIMEOUT)).fuse() => {
-                println!("keep-alive timeout expired, closing..");
+                trace!("keep-alive timeout expired, closing..");
                 break;
             }
         }
@@ -346,7 +347,7 @@ async fn read_chunked<'a>(
                 .await
                 .is_err()
             {
-                println!("discarding unread bytes");
+                trace!("read_chunked discarding unread bytes");
             }
 
             total_chunk_len += buf_chunk_len;
@@ -368,7 +369,7 @@ async fn read_chunked<'a>(
         let (trailers, trailer_buf_read_len) = read_trailers(reader, buf, buf_read_len).await?;
         buf_read_len = trailer_buf_read_len;
         if send_trailers(buf, &mut body_tx, trailers).await.is_err() {
-            println!("discarding unread trailers");
+            trace!("read_chunked discarding unread trailers");
         }
     }
 

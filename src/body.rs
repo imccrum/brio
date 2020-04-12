@@ -1,6 +1,7 @@
 use crate::{request::Chunk, Receiver};
 use async_std::io::Read;
 use futures::Stream;
+use log::info;
 use std::{
     io::Error,
     pin::Pin,
@@ -60,7 +61,8 @@ impl Read for ChunkedBody {
                 Chunk::Trailers {
                     trailers: _trailers,
                 } => {
-                    println!("ignoring trailers? {:?}", _trailers);
+                    // todo do not ignore trailers
+                    info!("ignoring trailers? {:?}", _trailers);
                     self.last_bit
                         .take()
                         .map(|last_bit| {

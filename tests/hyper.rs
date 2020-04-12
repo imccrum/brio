@@ -3,11 +3,12 @@
 use brio::{App, Ctx, Request, Response, Status};
 use futures::Future;
 use hyper::{Client, Uri};
+use log::info;
 use rand::{thread_rng, Rng};
 use serde_json::{json, Value};
 use std::panic;
 
-use std::{pin::Pin, thread};
+use std::{pin::Pin, thread, time::Instant};
 
 mod util;
 
@@ -27,9 +28,25 @@ async fn handler(mut req: Request) -> Response {
     res
 }
 
-fn logger(ctx: Ctx) -> BoxFuture<Response> {
-    println!("request recived: {}", ctx.req().route().path());
-    ctx.next()
+fn logger(mut ctx: Ctx) -> BoxFuture<Response> {
+    let now = Instant::now();
+    let path = ctx.req().route().path().clone();
+    ctx.req_mut()
+        .headers_mut()
+        .insert("foo".to_owned(), "bar".to_owned());
+    let method = ctx.req().route().method().unwrap().clone();
+    let fut = ctx.next();
+    Box::pin(async move {
+        let res = fut.await;
+        info!(
+            "request {} {} took {:?} ({})",
+            method,
+            path,
+            Instant::now().duration_since(now),
+            res.status() as u32
+        );
+        res
+    })
 }
 
 #[tokio::test]

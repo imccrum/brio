@@ -1,5 +1,6 @@
 #![feature(async_closure)]
 use brio::{App, Ctx, Request, Response, Status};
+use log::info;
 use std::future::Future;
 use std::{pin::Pin, time::Instant};
 
@@ -11,6 +12,8 @@ type BoxFuture<'a, Response> = Pin<Box<dyn Future<Output = Response> + Send + 's
 // wrk -t12 -c400 -d30s http://127.0.0.1:8000/foo
 // cargo test chunked -- --nocapture --test-threads=1
 fn main() {
+    std::env::set_var("RUST_LOG", "brio=info,server=debug");
+    env_logger::init();
     let mut app = App::new();
     app.get("/foo", foo);
     app.post("/bar", bar);
@@ -29,7 +32,7 @@ fn logger(ctx: Ctx) -> BoxFuture<Response> {
     let fut = ctx.next();
     Box::pin(async move {
         let res = fut.await;
-        println!(
+        info!(
             "request {} {} took {:?} ({})",
             method,
             path,

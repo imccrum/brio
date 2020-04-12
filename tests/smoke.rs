@@ -3,6 +3,7 @@
 use brio::{App, ChunkedBody, Ctx, Encoding, Request, Response, Status};
 use futures::Future;
 use httparse;
+use log::info;
 use rand::{thread_rng, Rng};
 use serde_json::{json, Value};
 use std::panic;
@@ -872,6 +873,9 @@ fn rotate_buf(buf: &mut [u8], len: usize) {
 }
 
 fn run_app() -> u32 {
+    std::env::set_var("RUST_LOG", "brio=info,smoke=debug");
+    let _ = env_logger::builder().is_test(true).try_init();
+
     let mut rng = thread_rng();
     let port: u32 = rng.gen_range(10000, 20000);
     thread::spawn(move || {
@@ -913,7 +917,7 @@ fn run_app() -> u32 {
             let fut = ctx.next();
             Box::pin(async move {
                 let res = fut.await;
-                println!(
+                info!(
                     "request {} {} took {:?} ({})",
                     method,
                     path,
